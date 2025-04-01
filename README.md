@@ -113,6 +113,13 @@ npm install
 npm start
 ```
 
+
+## test cases
+
+```bash
+python -m pytest tests/ -v
+```
+
 ## 📊 Implementation Plan
 
 ### Day 1: Frontend Development

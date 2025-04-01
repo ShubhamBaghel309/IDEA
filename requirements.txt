@@ -8,3 +8,8 @@ plotly
 python-docx
 scikit-learn
 numpy
+pytest
+httpx
+uvicorn
+fastapi
+python-dotenv
