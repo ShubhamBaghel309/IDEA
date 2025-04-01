@@ -5,3 +5,6 @@ torch
 sentencepiece
 transformers
 plotly
+python-docx
+scikit-learn
+numpy
