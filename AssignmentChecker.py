@@ -12,20 +12,34 @@ from langchain_core.documents import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_core.vectorstores import VectorStore
 from langchain_core.embeddings import Embeddings
-from langchain.vectorstores.chroma import Chroma
-from langchain.embeddings import HuggingFaceEmbeddings
+# Update imports to use langchain_community
+from langchain_community.vectorstores.chroma import Chroma
+from langchain_community.embeddings import HuggingFaceEmbeddings
 import langgraph.graph as lg
 import PyPDF2
 import io
 import uuid
 from datetime import datetime
 import chromadb
+import time
+from duckduckgo_search import DDGS
+import requests.exceptions
+
+# Define ChromaDBError here for compatibility
+try:
+    from chromadb.errors import ChromaDBError
+except ImportError:
+    # Fallback definition if the import fails
+    class ChromaDBError(Exception):
+        """Custom exception for ChromaDB errors when chromadb module is not properly installed."""
+        pass
 
 # Load the environment variables from .env file
 load_dotenv()
 
 # Set up the logging configuration
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, 
+                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class AssignmentChecker:
@@ -46,15 +60,29 @@ class AssignmentChecker:
         Args:
             vector_db_dir (str): Directory to store the vector database files
         """
-        # IMPROVEMENT: Add API key validation to fail fast if API key is missing or invalid
-        genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+        # Validate API key is present and valid
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("GOOGLE_API_KEY environment variable is missing. Please set it in your .env file.")
+        
+        # Configure Gemini API
+        genai.configure(api_key=api_key)
+        
+        # Validate API key by making a small test request
+        try:
+            model = genai.GenerativeModel('gemini-2.0-pro')
+            model.generate_content("test")
+            logger.info("API key validation successful")
+        except Exception as e:
+            raise ValueError(f"Invalid or expired Google API key: {str(e)}")
         
         # Initialize the LLM with specific parameters for optimal results
         self.llm = ChatGoogleGenerativeAI(
             model='gemini-2.5-pro-exp-03-25',
-            google_api_key=os.getenv("GOOGLE_API_KEY"),
+            google_api_key=api_key,
             temperature=0.1,  # Low temperature for more consistent, factual responses
             convert_system_message_to_human=True,
+            timeout=120,  # Add timeout to prevent hanging
         )
         
         self.vector_db_dir = vector_db_dir
@@ -101,11 +129,18 @@ class AssignmentChecker:
             
             return text, doc_id
             
+        except PyPDF2.errors.PdfReadError as e:
+            # Handle specific PyPDF2 errors
+            pdf_name = getattr(pdf_file, 'name', 'unknown')
+            error_msg = f"Failed to read PDF '{pdf_name}': {str(e)}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
         except Exception as e:
-            # IMPROVEMENT: Catch specific exceptions like PyPDF2.PdfReadError instead of generic Exception
-            # IMPROVEMENT: Add better error information including the PDF filename if available
-            logger.error(f"Error processing PDF: {str(e)}")
-            raise ValueError(f"Failed to process PDF: {str(e)}")
+            # Handle other unexpected errors
+            pdf_name = getattr(pdf_file, 'name', 'unknown')
+            error_msg = f"Error processing PDF '{pdf_name}': {str(e)}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
     
     def _initialize_vector_db(self):
         """
@@ -115,27 +150,42 @@ class AssignmentChecker:
         embeddings for semantic search capabilities. Falls back to in-memory DB
         if there's an error with persistent storage.
         """
-        try:
-            # Create the directory if it doesn't exist
-            os.makedirs(self.vector_db_dir, exist_ok=True)
-            
-            # Initialize the ChromaDB vector store with persistence
-            self.vector_db = Chroma(
-                collection_name="assignments",
-                embedding_function=self.embeddings,
-                persist_directory=self.vector_db_dir,
-            )
-            logger.info("Vector database initialized successfully")
-            
-        except Exception as e:
-            # IMPROVEMENT: Catch specific ChromaDB related exceptions rather than generic Exception
-            # IMPROVEMENT: Add a mechanism to retry connection to ChromaDB if it fails temporarily
-            logger.error(f"Error initializing vector database: {str(e)}")
-            logger.info("Falling back to in-memory vector database")
-            self.vector_db = Chroma(
-                collection_name="assignments",
-                embedding_function=self.embeddings
-            )
+        max_retries = 3
+        retry_delay = 2  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                # Create the directory if it doesn't exist
+                os.makedirs(self.vector_db_dir, exist_ok=True)
+                
+                # Initialize the ChromaDB vector store with persistence
+                self.vector_db = Chroma(
+                    collection_name="assignments",
+                    embedding_function=self.embeddings,
+                    persist_directory=self.vector_db_dir,
+                )
+                logger.info("Vector database initialized successfully")
+                return
+                
+            except ChromaDBError as e:
+                logger.warning(f"ChromaDB error (attempt {attempt+1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    logger.error(f"Failed to initialize ChromaDB after {max_retries} attempts")
+                    
+            except Exception as e:
+                logger.error(f"Unexpected error initializing vector database: {str(e)}")
+                break
+                
+        # Fallback to in-memory database
+        logger.warning("Falling back to in-memory vector database")
+        self.vector_db = Chroma(
+            collection_name="assignments",
+            embedding_function=self.embeddings
+        )
             
     @tool
     def search_web(self, query: str) -> str:
@@ -147,37 +197,48 @@ class AssignmentChecker:
             
         Returns:
             Formatted search results as a string
-            
-        Note:
-            Currently using DuckDuckGo API as a free alternative.
-            Consider replacing with a more robust solution for production.
         """
-        # IMPROVEMENT: Replace direct API call with the duckduckgo-search package
-        # Example: `pip install duckduckgo-search` and use:
-        # from duckduckgo_search import DDGS
-        # with DDGS() as ddgs:
-        #     results = ddgs.text(query, max_results=3)
-        
-        search_url = f"https://api.duckduckgo.com/?query={query}&limit=3"
-        
         try:
-            response = requests.get(search_url)
-            # IMPROVEMENT: Check response status code before trying to parse JSON
-            # IMPROVEMENT: Add timeout to requests.get to prevent hanging
-            results = response.json()
-            
+            # Using duckduckgo_search package
+            with DDGS() as ddgs:
+                results = ddgs.text(query, max_results=3)
+                
             formatted_results = ""
             for i, result in enumerate(results):
                 formatted_results += f"Source {i+1}: {result.get('title', 'No title')}\n"
-                formatted_results += f"URL: {result.get('link', 'No link')}\n"
-                formatted_results += f"Snippet: {result.get('snippet', 'No snippet')}\n\n"
+                formatted_results += f"URL: {result.get('href', 'No link')}\n"
+                formatted_results += f"Snippet: {result.get('body', 'No snippet')}\n\n"
             
             return formatted_results if formatted_results else "No search results found."
-        
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Search request error: {e}")
+            # Implement retry logic
+            for attempt in range(3):
+                try:
+                    logger.info(f"Retrying search (attempt {attempt+1}/3)")
+                    time.sleep(1)  # Wait a second before retrying
+                    with DDGS() as ddgs:
+                        results = ddgs.text(query, max_results=3)
+                    
+                    formatted_results = ""
+                    for i, result in enumerate(results):
+                        formatted_results += f"Source {i+1}: {result.get('title', 'No title')}\n"
+                        formatted_results += f"URL: {result.get('href', 'No link')}\n"
+                        formatted_results += f"Snippet: {result.get('body', 'No snippet')}\n\n"
+                    
+                    return formatted_results if formatted_results else "No search results found."
+                except:
+                    continue
+                    
+            return f"Error performing web search after multiple attempts: {str(e)}"
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Search JSON decode error: {e}")
+            return f"Error parsing search results: {str(e)}"
+            
         except Exception as e:
-            # IMPROVEMENT: Catch specific exceptions like requests.RequestException, json.JSONDecodeError
-            # IMPROVEMENT: Add retry mechanism for network errors
-            logger.error(f"Search error: {e}")
+            logger.error(f"Unexpected search error: {e}")
             return f"Error performing web search: {str(e)}"
             
     def store_in_vector_db(self, content: str, metadata: Dict[str, Any]) -> str:
@@ -205,13 +266,22 @@ class AssignmentChecker:
             if "timestamp" not in metadata:
                 metadata["timestamp"] = datetime.now().isoformat()
                 
-            # Split text into chunks if it's too long for more effective embedding
+            # Handle very long documents by streaming chunks
             text_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=1000,
                 chunk_overlap=100
             )
-            # IMPROVEMENT: Very long documents may cause memory issues - consider streaming chunks
-            chunks = text_splitter.split_text(content)
+            
+            # Process large documents in smaller batches to avoid memory issues
+            max_content_length = 100000  # Characters
+            if len(content) > max_content_length:
+                logger.info(f"Large document detected ({len(content)} chars). Processing in chunks.")
+                chunks = []
+                for i in range(0, len(content), max_content_length):
+                    chunk_content = content[i:i+max_content_length]
+                    chunks.extend(text_splitter.split_text(chunk_content))
+            else:
+                chunks = text_splitter.split_text(content)
             
             # Create Document objects for each chunk
             documents = [
@@ -223,14 +293,22 @@ class AssignmentChecker:
             
             # Add to vector store
             self.vector_db.add_documents(documents)
-            # IMPROVEMENT: Self.vector_db.persist() may fail silently - add error check
-            self.vector_db.persist()  # Save to disk
+            
+            # Persist to disk with error checking
+            try:
+                self.vector_db.persist()
+                logger.info(f"Vector DB persistence successful - {len(chunks)} chunks saved")
+            except Exception as persist_error:
+                logger.error(f"Failed to persist vector DB: {str(persist_error)}")
+                # Continue without failing - data is still in memory
             
             logger.info(f"Content stored in vector DB with ID: {doc_id}, chunks: {len(chunks)}")
             return doc_id
             
+        except ChromaDBError as e:
+            logger.error(f"ChromaDB error when storing content: {str(e)}")
+            raise ValueError(f"Failed to store in vector database: {str(e)}")
         except Exception as e:
-            # IMPROVEMENT: Catch specific exceptions from ChromaDB
             logger.error(f"Error storing in vector database: {str(e)}")
             raise ValueError(f"Failed to store in vector database: {str(e)}")
     
@@ -286,25 +364,43 @@ class AssignmentChecker:
             )
         ]
         
-        # IMPROVEMENT: Add timeout handling for LLM calls - they can hang indefinitely
-        # IMPROVEMENT: Add retry logic for temporary LLM service outages
-        response = self.llm.invoke(messages)
-        search_query = response.content
-        logger.info(f"Generated search query: {search_query}")
-        
-        # Execute the search query
-        search_results = self.search_web(search_query)
-        
-        # Update and return the state
-        return {
-            **state,
-            "search_results": search_results,
-            "messages": state.get("messages", []) + [
-                HumanMessage(content=research_prompt),
-                AIMessage(content=response.content)
-            ],
-            "next": "analyze"
-        }
+        # Handle timeout and add retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = self.llm.invoke(
+                    messages,
+                    timeout=60  # 60 second timeout
+                )
+                search_query = response.content
+                logger.info(f"Generated search query: {search_query}")
+                
+                # Execute the search query
+                search_results = self.search_web(search_query)
+                
+                # Update and return the state
+                return {
+                    **state,
+                    "search_results": search_results,
+                    "messages": state.get("messages", []) + [
+                        HumanMessage(content=research_prompt),
+                        AIMessage(content=response.content)
+                    ],
+                    "next": "analyze"
+                }
+            except Exception as e:
+                logger.warning(f"LLM call failed (attempt {attempt+1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1:
+                    backoff_time = 2 ** attempt  # Exponential backoff
+                    logger.info(f"Retrying in {backoff_time} seconds...")
+                    time.sleep(backoff_time)
+                else:
+                    logger.error(f"Failed to get LLM response after {max_retries} attempts")
+                    return {
+                        **state,
+                        "search_results": "Error: Unable to generate search query due to LLM service issues.",
+                        "next": "analyze"  # Continue workflow despite error
+                    }
     
     def _analyze_node(self, state: CheckerState) -> CheckerState:
         """
@@ -324,6 +420,12 @@ class AssignmentChecker:
         student_answer = state["student_answer"]
         search_results = state.get("search_results", "")
         reference_material = state.get("reference_material", "")
+        
+        # Handle large student answers that may exceed token limits
+        max_length = 8000
+        if len(student_answer) > max_length:
+            logger.info(f"Student answer exceeds {max_length} chars, truncating for analysis")
+            student_answer = student_answer[:max_length] + f"\n\n[Note: Answer truncated from {len(student_answer)} characters due to length limits]"
         
         # Create a prompt for detailed analysis
         analysis_prompt = f"""
@@ -353,19 +455,38 @@ class AssignmentChecker:
             HumanMessage(content=analysis_prompt)
         ]
         
-        # IMPROVEMENT: Handle LLM token limits - large student answers may exceed context limits
-        response = self.llm.invoke(messages)
-        
-        # Update and return the state
-        return {
-            **state,
-            "analysis": response.content,
-            "messages": state.get("messages", []) + [
-                HumanMessage(content=analysis_prompt),
-                AIMessage(content=response.content)
-            ],
-            "next": "grade"
-        }
+        # Handle timeout and add retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = self.llm.invoke(
+                    messages,
+                    timeout=120  # 2-minute timeout for analysis
+                )
+                
+                # Update and return the state
+                return {
+                    **state,
+                    "analysis": response.content,
+                    "messages": state.get("messages", []) + [
+                        HumanMessage(content=analysis_prompt),
+                        AIMessage(content=response.content)
+                    ],
+                    "next": "grade"
+                }
+            except Exception as e:
+                logger.warning(f"Analysis LLM call failed (attempt {attempt+1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1:
+                    backoff_time = 2 ** attempt  # Exponential backoff
+                    logger.info(f"Retrying analysis in {backoff_time} seconds...")
+                    time.sleep(backoff_time)
+                else:
+                    logger.error(f"Failed to get analysis after {max_retries} attempts")
+                    return {
+                        **state,
+                        "analysis": "Error: Unable to complete analysis due to service issues.",
+                        "next": "grade"  # Continue workflow despite error
+                    }
     
     def _grade_node(self, state: CheckerState) -> CheckerState:
         """
@@ -384,6 +505,12 @@ class AssignmentChecker:
         question = state["question"]
         student_answer = state["student_answer"]
         analysis = state.get("analysis", "")
+        
+        # Handle large student answers that may exceed token limits
+        max_length = 6000
+        if len(student_answer) > max_length:
+            logger.info(f"Student answer exceeds {max_length} chars, truncating for grading")
+            student_answer = student_answer[:max_length] + f"\n\n[Note: Answer truncated from {len(student_answer)} characters due to length limits]"
         
         # Create a prompt for grading and feedback
         grading_prompt = f"""
@@ -415,35 +542,57 @@ class AssignmentChecker:
             HumanMessage(content=grading_prompt)
         ]
         
-        response = self.llm.invoke(messages)
-        
-        # Extract grade from response
-        feedback_text = response.content
-        grade = "See detailed feedback"
-        
-        try:
-            if "GRADE:" in feedback_text:
-                grade_line = [line for line in feedback_text.split('\n') if "GRADE:" in line][0]
-                grade = grade_line.split("GRADE:")[1].strip()
-        except:
-            # IMPROVEMENT: Bare except is too broad - specify exceptions and add proper error handling
-            # IMPROVEMENT: Log the issue when grade extraction fails
-            logger.warning("Could not extract grade from feedback text")
-            pass
-            
-        logger.info(f"Assigned grade: {grade}")
-        
-        # Update the state with the grade and feedback
-        return {
-            **state,
-            "grade": grade,
-            "feedback": feedback_text,
-            "messages": state.get("messages", []) + [
-                HumanMessage(content=grading_prompt),
-                AIMessage(content=response.content)
-            ],
-            "next": None  # End of workflow
-        }
+        # Handle timeout and add retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = self.llm.invoke(
+                    messages,
+                    timeout=90  # 90-second timeout for grading
+                )
+                
+                # Extract grade from response
+                feedback_text = response.content
+                grade = "See detailed feedback"
+                
+                try:
+                    if "GRADE:" in feedback_text:
+                        grade_lines = [line for line in feedback_text.split('\n') if "GRADE:" in line]
+                        if grade_lines:
+                            grade_line = grade_lines[0]
+                            grade = grade_line.split("GRADE:")[1].strip()
+                except (IndexError, AttributeError) as ex:
+                    logger.warning(f"Could not extract grade from feedback text: {str(ex)}")
+                except Exception as ex:
+                    logger.warning(f"Unexpected error extracting grade: {str(ex)}")
+                    
+                logger.info(f"Assigned grade: {grade}")
+                
+                # Update the state with the grade and feedback
+                return {
+                    **state,
+                    "grade": grade,
+                    "feedback": feedback_text,
+                    "messages": state.get("messages", []) + [
+                        HumanMessage(content=grading_prompt),
+                        AIMessage(content=response.content)
+                    ],
+                    "next": None  # End of workflow
+                }
+            except Exception as e:
+                logger.warning(f"Grading LLM call failed (attempt {attempt+1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1:
+                    backoff_time = 2 ** attempt  # Exponential backoff
+                    logger.info(f"Retrying grading in {backoff_time} seconds...")
+                    time.sleep(backoff_time)
+                else:
+                    logger.error(f"Failed to get grading after {max_retries} attempts")
+                    return {
+                        **state,
+                        "grade": "Error: Unable to grade due to service issues",
+                        "feedback": "The system encountered an error while trying to grade this assignment. Please try again later.",
+                        "next": None  # End of workflow
+                    }
         
     def _build_workflow_graph(self) -> Any:
         """
@@ -479,7 +628,6 @@ class AssignmentChecker:
         workflow.compile()
         logger.info("Workflow graph built successfully")
         
-        # IMPROVEMENT: Missing return statement! This causes self.checker_app to be None
         return workflow  # Return the compiled workflow
         
     def check_assignment(self, question: str, student_answer: str, student_name: str = "", reference_material: str = "") -> Dict[str, Any]:
@@ -511,7 +659,11 @@ class AssignmentChecker:
         try:
             logger.info(f"Starting assignment checking process for {student_name if student_name else 'a student'}")
             
-            # IMPROVEMENT: Add type checking to ensure self.checker_app is not None before invoking
+            # Ensure checker_app is not None before invoking
+            if self.checker_app is None:
+                logger.error("Workflow graph not initialized")
+                raise ValueError("Assignment checking workflow not initialized properly")
+                
             result = self.checker_app.invoke(initial_state)
             
             # Prepare metadata for vector database storage
@@ -538,9 +690,15 @@ class AssignmentChecker:
                 "success": True
             }
             
+        except ValueError as e:
+            logger.error(f"Value error in assignment checking workflow: {e}")
+            return {
+                "grade": "Error",
+                "feedback": f"Invalid input: {str(e)}",
+                "analysis": "",
+                "success": False
+            }
         except Exception as e:
-            # IMPROVEMENT: Catch specific exceptions for different error cases
-            # IMPROVEMENT: Add better error categorization for troubleshooting
             logger.error(f"Error in assignment checking workflow: {e}")
             return {
                 "grade": "Error",
@@ -588,11 +746,27 @@ class AssignmentChecker:
             
             return result
             
+        except PyPDF2.errors.PdfReadError as e:
+            # Handle specific PDF reading errors
+            logger.error(f"PDF read error: {e}")
+            return {
+                "grade": "Error",
+                "feedback": f"Could not read the PDF file: {str(e)}",
+                "success": False
+            }
+        except ValueError as e:
+            # Handle value errors from process_pdf()
+            logger.error(f"PDF processing error: {e}")
+            return {
+                "grade": "Error",
+                "feedback": f"Problem processing the PDF: {str(e)}",
+                "success": False
+            }
         except Exception as e:
-            # IMPROVEMENT: Add specific error handling for PDF processing vs assignment checking
+            # Handle other unexpected errors
             logger.error(f"Error checking PDF assignment: {e}")
             return {
                 "grade": "Error",
-                "feedback": f"An error processing the PDF assignment: {str(e)}",
+                "feedback": f"An error occurred while processing the assignment: {str(e)}",
                 "success": False
             }
