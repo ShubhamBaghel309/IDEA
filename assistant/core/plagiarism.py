@@ -39,16 +39,55 @@ def read_text_file(file):
     return content
 
 def calculate_perplexity(text):
-    """Calculate the perplexity score of a given text."""
-    encoded_input = tokenizer.encode(text, add_special_tokens=False, return_tensors='pt')
-    input_ids = encoded_input[0]
+    """Calculate the perplexity score of a given text.
+    For longer texts, we calculate perplexity in chunks to handle token limits.
+    """
+    # Handle empty or very short texts
+    if not text or len(text) < 10:
+        return 10000  # High perplexity (likely human) for very short texts
 
-    with torch.no_grad():
-        outputs = model(input_ids)
-        logits = outputs.logits
-
-    perplexity = torch.exp(F.cross_entropy(logits.view(-1, logits.size(-1)), input_ids.view(-1)))
-    return perplexity.item()
+    # Tokenize the text
+    try:
+        # Process text in chunks to avoid token length issues
+        max_length = 512  # GPT-2 context window size
+        
+        # For longer texts, process in chunks and take the minimum perplexity
+        # This catches AI-generated segments within larger texts
+        if len(text) > 1000:  # For longer texts
+            chunks = [text[i:i+1000] for i in range(0, len(text), 750)]  # Overlapping chunks
+            perplexities = []
+            
+            for chunk in chunks:
+                encoded_input = tokenizer.encode(chunk, add_special_tokens=False, return_tensors='pt', truncation=True, max_length=max_length)
+                if len(encoded_input[0]) == 0:
+                    continue
+                
+                input_ids = encoded_input[0]
+                
+                with torch.no_grad():
+                    outputs = model(input_ids)
+                    logits = outputs.logits
+                
+                # Calculate perplexity for this chunk
+                chunk_perplexity = torch.exp(F.cross_entropy(logits.view(-1, logits.size(-1)), input_ids.view(-1)))
+                perplexities.append(chunk_perplexity.item())
+            
+            # Return the minimum perplexity found (most AI-like section)
+            return min(perplexities) if perplexities else 5000
+        else:
+            # For shorter texts, calculate normally
+            encoded_input = tokenizer.encode(text, add_special_tokens=False, return_tensors='pt', truncation=True, max_length=max_length)
+            input_ids = encoded_input[0]
+            
+            with torch.no_grad():
+                outputs = model(input_ids)
+                logits = outputs.logits
+            
+            perplexity = torch.exp(F.cross_entropy(logits.view(-1, logits.size(-1)), input_ids.view(-1)))
+            return perplexity.item()
+    except Exception as e:
+        print(f"Error calculating perplexity: {e}")
+        return 3000  # Default to moderate perplexity on error
 
 def calculate_burstiness(text):
     """Calculate the burstiness score of a given text."""
@@ -83,17 +122,28 @@ def calculate_plagiarism(document_text, knowledge_base_texts, n=3):
     # 2. We scale and invert perplexity for a 0-100 range
     # Higher score = more likely to be plagiarized/AI-generated
     
-    # Normalize perplexity (typical range: 10-5000 for GPT models)
+    # Normalize perplexity (typical range: 10-1000 for GPT models)
     # Lower perplexity is more suspicious, so we invert the scale
-    max_perplexity = 5000
-    perplexity_score = max(0, 100 - min(100, (perplexity / max_perplexity) * 100))
+    max_perplexity = 1000  # Significantly reduced to better catch AI content
+    
+    # Apply stronger inversion for lower perplexity values
+    # This makes the system more sensitive to very low perplexity values
+    if perplexity < 100:  # Extremely low perplexity is a very strong AI signal
+        perplexity_score = 95  # Almost certainly AI-generated
+    elif perplexity < 200:
+        perplexity_score = 85  # Very likely AI-generated
+    elif perplexity < 400:
+        perplexity_score = 70  # Likely AI-generated
+    else:
+        # Standard scaling for moderate to high perplexity
+        perplexity_score = max(0, 100 - min(100, (perplexity / max_perplexity) * 100))
     
     # Normalize burstiness (typical range: 0-1)
     # Higher burstiness suggests more repetitive patterns
     burstiness_score = burstiness * 100
     
-    # Combined score, weighted more toward perplexity
-    plagiarism_score = (perplexity_score * 0.7) + (burstiness_score * 0.3)
+    # Combined score, weighted even more heavily toward perplexity for better detection
+    plagiarism_score = (perplexity_score * 0.9) + (burstiness_score * 0.1)
     
     # Calculate individual similarity scores for reference
     similarities = []
@@ -110,6 +160,9 @@ def calculate_plagiarism(document_text, knowledge_base_texts, n=3):
         similarity = max(0, 100 - min(100, (perplexity_diff / 1000) * 100))
         similarities.append(similarity)
     
+    # Print debug info
+    print(f"Debug - Perplexity: {perplexity}, Score: {perplexity_score}, Final Score: {plagiarism_score}")
+    
     return plagiarism_score, similarities
 
 def analyze_ai_content(text):
@@ -117,19 +170,22 @@ def analyze_ai_content(text):
     perplexity = calculate_perplexity(text)
     burstiness = calculate_burstiness(text)
     
-    # Adjusted threshold values based on testing
-    perplexity_threshold = 10000  # Lowered to reduce false positives
-    burstiness_threshold = 0.15  # Increased to allow more human-like variability
+    # Much lower threshold values to catch newer AI models
+    perplexity_threshold = 500  # Significantly lowered threshold for modern AI models
+    burstiness_threshold = 0.1  # Burstiness is a secondary indicator
     
-    # Determine the likely source of the content
-    if perplexity >= perplexity_threshold and burstiness >= burstiness_threshold:
-        result = "AI Generated Content"
-    elif perplexity <= perplexity_threshold and burstiness <= burstiness_threshold:
-        result = "Human-Written Content"
-    elif perplexity >= perplexity_threshold and burstiness <= burstiness_threshold:
-        result = "Complex Human Text or Poorly Generated AI Text"
-    elif perplexity <= perplexity_threshold and burstiness >= burstiness_threshold:
-        result = "Simple Human Text"
+    # More aggressive detection logic
+    if perplexity < 200:
+        result = "AI Generated Content (High Confidence)"  # Very low perplexity is a strong signal
+    elif perplexity < 500:
+        result = "AI Generated Content (Medium Confidence)"  # Still likely AI but less certain
+    elif burstiness >= burstiness_threshold or perplexity < 800:
+        result = "Potential AI Generated Content"  # Some AI-like patterns detected
+    else:
+        result = "Likely Human-Written Content"
+    
+    # Print debug information
+    print(f"AI Detection - Perplexity: {perplexity}, Burstiness: {burstiness}, Result: {result}")
         
     return {
         'perplexity': perplexity,

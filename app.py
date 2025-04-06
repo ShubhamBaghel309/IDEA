@@ -83,8 +83,14 @@ async def check_text_assignment(request: TextAssignmentRequest):
         # Now calculate plagiarism score (which also uses perplexity)
         plagiarism_score, similarity_scores = calculate_plagiarism(answer_text, knowledge_base_texts)
         
-        # Determine if AI-generated based on both result text AND score threshold
-        is_ai_generated = ai_result_text.startswith('AI Generated') and plagiarism_score > 40
+        # More aggressive AI detection logic - use OR instead of AND
+        # Detect AI content if:
+        # 1. The text pattern analysis suggests AI-generated content OR
+        # 2. The statistical score is above our lowered threshold of 20%
+        is_ai_generated = "AI Generated" in ai_result_text or plagiarism_score > 20
+        
+        # Log more detailed detection info
+        logger.info(f"Detailed AI detection - Score: {plagiarism_score:.2f}%, AI result: {ai_result_text}, Final decision: {is_ai_generated}")
         
         # Create plagiarism result
         plagiarism_result = PlagiarismResult(
@@ -97,7 +103,7 @@ async def check_text_assignment(request: TextAssignmentRequest):
         logger.info(f"Plagiarism score: {plagiarism_score:.2f}%, AI-generated: {is_ai_generated}")
         
         # Step 2: Only proceed with assignment checking if not flagged as AI-generated with high plagiarism
-        if is_ai_generated and plagiarism_score > 75:
+        if is_ai_generated and plagiarism_score > 50:  # Lowered from 60 to catch more AI content
             # For highly suspicious content, return early with a warning
             return AssignmentResponse(
                 student_name=request.student_name,
@@ -173,8 +179,14 @@ async def check_pdf_assignment(
         # Now calculate plagiarism score (which also uses perplexity)
         plagiarism_score, similarity_scores = calculate_plagiarism(extracted_text, knowledge_base_texts)
         
-        # Determine if AI-generated based on both result text AND score threshold
-        is_ai_generated = ai_result_text.startswith('AI Generated') and plagiarism_score > 40
+        # More aggressive AI detection logic - use OR instead of AND
+        # Detect AI content if:
+        # 1. The text pattern analysis suggests AI-generated content OR
+        # 2. The statistical score is above our lowered threshold of 20%
+        is_ai_generated = "AI Generated" in ai_result_text or plagiarism_score > 20
+        
+        # Log more detailed detection info
+        logger.info(f"Detailed AI detection - Score: {plagiarism_score:.2f}%, AI result: {ai_result_text}, Final decision: {is_ai_generated}")
         
         # Create plagiarism result
         plagiarism_result = PlagiarismResult(
@@ -187,7 +199,7 @@ async def check_pdf_assignment(
         logger.info(f"Plagiarism score: {plagiarism_score:.2f}%, AI-generated: {is_ai_generated}")
         
         # Step 3: Only proceed with assignment checking if not flagged as AI-generated with high plagiarism
-        if is_ai_generated and plagiarism_score > 75:
+        if is_ai_generated and plagiarism_score > 50:  # Lowered from 60 to catch more AI content
             # For highly suspicious content, return early with a warning
             return AssignmentResponse(
                 student_name=student_name,
