@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: GDSC
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run_app.py
+    envVars:
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: PORT
+        value: 8000
+
+  - type: static
+    name: GDSC-frontend
+    buildCommand: cd frontent && npm install && npm run build
+    publishDirectory: frontent/dist
+    envVars:
+      - key: VITE_API_URL
+        sync: false
