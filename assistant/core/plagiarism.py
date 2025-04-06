@@ -71,23 +71,46 @@ def get_document_ngrams(text, n=3):
     return list(ngrams(tokens, n))
 
 def calculate_plagiarism(document_text, knowledge_base_texts, n=3):
-    """Calculate plagiarism percentage using cosine similarity on TF-IDF vectors."""
-    # Prepare corpus with document and knowledge base texts
-    corpus = [document_text] + knowledge_base_texts
+    """Calculate plagiarism percentage using perplexity and burstiness metrics."""
+    # Calculate perplexity for the document
+    perplexity = calculate_perplexity(document_text)
     
-    # Create TF-IDF vectors
-    vectorizer = TfidfVectorizer()
-    tfidf_matrix = vectorizer.fit_transform(corpus)
+    # Calculate burstiness for the document 
+    burstiness = calculate_burstiness(document_text)
     
-    # Calculate cosine similarity between document and each knowledge base text
+    # Calculate a combined plagiarism score
+    # 1. Low perplexity and high burstiness suggest AI-generated content
+    # 2. We scale and invert perplexity for a 0-100 range
+    # Higher score = more likely to be plagiarized/AI-generated
+    
+    # Normalize perplexity (typical range: 10-5000 for GPT models)
+    # Lower perplexity is more suspicious, so we invert the scale
+    max_perplexity = 5000
+    perplexity_score = max(0, 100 - min(100, (perplexity / max_perplexity) * 100))
+    
+    # Normalize burstiness (typical range: 0-1)
+    # Higher burstiness suggests more repetitive patterns
+    burstiness_score = burstiness * 100
+    
+    # Combined score, weighted more toward perplexity
+    plagiarism_score = (perplexity_score * 0.7) + (burstiness_score * 0.3)
+    
+    # Calculate individual similarity scores for reference
     similarities = []
-    for i in range(1, len(corpus)):
-        similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[i:i+1])[0][0]
+    for kb_text in knowledge_base_texts:
+        if not kb_text:
+            similarities.append(0)
+            continue
+            
+        # Use perplexity difference as similarity metric
+        kb_perplexity = calculate_perplexity(kb_text)
+        perplexity_diff = abs(perplexity - kb_perplexity)
+        
+        # Normalize to 0-100 scale (closer perplexities suggest similarity)
+        similarity = max(0, 100 - min(100, (perplexity_diff / 1000) * 100))
         similarities.append(similarity)
     
-    # Return the highest similarity score as plagiarism percentage
-    max_similarity = max(similarities) if similarities else 0
-    return max_similarity * 100, similarities
+    return plagiarism_score, similarities
 
 def analyze_ai_content(text):
     """Analyze whether the content is AI-generated or human-written."""

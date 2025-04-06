@@ -17,8 +17,10 @@ chromadb
 langchain
 langchain-community
 langchain-google-genai
+langchain-huggingface
 langgraph
 PyPDF2
 google-generativeai
 duckduckgo-search
 sentence-transformers
+python-multipart

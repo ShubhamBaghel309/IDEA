@@ -14,7 +14,8 @@ from langchain_core.vectorstores import VectorStore
 from langchain_core.embeddings import Embeddings
 # Update imports to use langchain_community
 from langchain_community.vectorstores.chroma import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
+# Update to use the new package for HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 import langgraph.graph as lg
 import PyPDF2
 import io
@@ -70,7 +71,7 @@ class AssignmentChecker:
         
         # Validate API key by making a small test request
         try:
-            model = genai.GenerativeModel('gemini-2.0-pro')
+            model = genai.GenerativeModel('gemini-2.0-flash')
             model.generate_content("test")
             logger.info("API key validation successful")
         except Exception as e:
@@ -78,7 +79,7 @@ class AssignmentChecker:
         
         # Initialize the LLM with specific parameters for optimal results
         self.llm = ChatGoogleGenerativeAI(
-            model='gemini-2.5-pro-exp-03-25',
+            model='gemini-2.0-flash',
             google_api_key=api_key,
             temperature=0.1,  # Low temperature for more consistent, factual responses
             convert_system_message_to_human=True,
@@ -329,7 +330,45 @@ class AssignmentChecker:
         messages: List[Any]  # History of messages in the workflow
         next: Optional[str]  # Next node to execute in the workflow
         
-    def _research_node(self, state: CheckerState) -> CheckerState:
+    def _build_workflow_graph(self) -> Any:
+        """
+        Build and compile the langgraph workflow for the assignment checker.
+        
+        Creates a directed graph with nodes for each step in the process:
+        The workflow consists of these steps:
+           1. Research - search for relevant information
+           2. Analysis - analyze the student's answer
+           3. Grading - assign a grade and provide feedback
+        
+        Returns: 
+            Compiled workflow graph
+        """
+        # Create a basic graph with fixed routing instead of dynamic routing
+        # This approach is compatible with langgraph 0.3.25
+        workflow = lg.Graph()
+        
+        # Add nodes to the graph
+        workflow.add_node("research", self._research_node)
+        workflow.add_node("analyze", self._analyze_node)
+        workflow.add_node("grade", self._grade_node)
+        
+        # Add START edge - this is critical
+        workflow.add_edge(lg.START, "research")
+        
+        # Add fixed edges between nodes to define workflow
+        workflow.add_edge("research", "analyze")
+        workflow.add_edge("analyze", "grade")
+        
+        # Add edge from grade to END
+        workflow.add_edge("grade", lg.END)
+        
+        # Compile the graph
+        compiled_workflow = workflow.compile()
+        logger.info("Workflow graph built successfully")
+        
+        return compiled_workflow
+        
+    def _research_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
         Research node: Searches for relevant information to help grade the assignment.
         
@@ -340,7 +379,7 @@ class AssignmentChecker:
             state: Current state of the workflow
             
         Returns:
-            Updated state with search results and next node to execute
+            Updated state with search results
         """
         question = state["question"]
         student_answer = state["student_answer"]
@@ -350,14 +389,16 @@ class AssignmentChecker:
         I need to check a student's assignment answer for accuracy and quality.
         Assignment question: {question}
         Student's answer: {student_answer}
-        What specific information should I search for to verify the accuracy and completeness 
-        of this answer? Generate a concise search query that will help me find relevant information.
+        
+        Generate a simple, concise search query (just one or two keywords or phrases) that will help me find relevant information
+        to verify the accuracy and completeness of this answer. Do not include formatting characters like asterisks, bullet points,
+        or markdown formatting. Just provide plain text terms.
         """
         
         # Set up the conversation with the LLM
         messages = [
             SystemMessage(
-                content="You are an expert educational research assistant. Generate effective search queries to find relevant information that will help verify students answers"
+                content="You are an expert educational research assistant. Generate effective and simple search queries to find relevant information that will help verify student answers. Do not use formatting like asterisks, bullets, or markdown."
             ),
             HumanMessage(
                 content=research_prompt
@@ -379,15 +420,12 @@ class AssignmentChecker:
                 search_results = self.search_web(search_query)
                 
                 # Update and return the state
-                return {
-                    **state,
-                    "search_results": search_results,
-                    "messages": state.get("messages", []) + [
-                        HumanMessage(content=research_prompt),
-                        AIMessage(content=response.content)
-                    ],
-                    "next": "analyze"
-                }
+                state["search_results"] = search_results
+                state["messages"] = state.get("messages", []) + [
+                    HumanMessage(content=research_prompt),
+                    AIMessage(content=response.content)
+                ]
+                return state
             except Exception as e:
                 logger.warning(f"LLM call failed (attempt {attempt+1}/{max_retries}): {str(e)}")
                 if attempt < max_retries - 1:
@@ -396,13 +434,10 @@ class AssignmentChecker:
                     time.sleep(backoff_time)
                 else:
                     logger.error(f"Failed to get LLM response after {max_retries} attempts")
-                    return {
-                        **state,
-                        "search_results": "Error: Unable to generate search query due to LLM service issues.",
-                        "next": "analyze"  # Continue workflow despite error
-                    }
+                    state["search_results"] = "Error: Unable to generate search query due to LLM service issues."
+                    return state
     
-    def _analyze_node(self, state: CheckerState) -> CheckerState:
+    def _analyze_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
         Analyze node: Evaluates the student answer against research findings.
         
@@ -413,7 +448,7 @@ class AssignmentChecker:
             state: Current state of the workflow
             
         Returns:
-            Updated state with analysis and next node to execute
+            Updated state with analysis
         """
         # Extract required information from state
         question = state["question"]
@@ -446,12 +481,13 @@ class AssignmentChecker:
         4. Critical thinking: Is there evidence of analysis, evaluation, or original thought?
         5. Structure: Is the answer well-organized and clearly expressed?
         
-        Provide a detailed analysis that identifies specific strengths and weaknesses.
+        Provide a detailed analysis that identifies specific strengths and weaknesses. Use plain text formatting without asterisks, 
+        bullet points, or other markdown. Present your analysis in clear paragraphs with simple section headings only.
         """
         
         # Set up the conversation with the LLM
         messages = [
-            SystemMessage(content="You are an expert educational analyst with deep subject matter expertise. Analyze student work with precision and insight."),
+            SystemMessage(content="You are an expert educational analyst with deep subject matter expertise. Analyze student work with precision and insight. Use plain text formatting in your response - no asterisks, bullet points, or markdown formatting."),
             HumanMessage(content=analysis_prompt)
         ]
         
@@ -464,16 +500,13 @@ class AssignmentChecker:
                     timeout=120  # 2-minute timeout for analysis
                 )
                 
-                # Update and return the state
-                return {
-                    **state,
-                    "analysis": response.content,
-                    "messages": state.get("messages", []) + [
-                        HumanMessage(content=analysis_prompt),
-                        AIMessage(content=response.content)
-                    ],
-                    "next": "grade"
-                }
+                # Update state
+                state["analysis"] = response.content
+                state["messages"] = state.get("messages", []) + [
+                    HumanMessage(content=analysis_prompt),
+                    AIMessage(content=response.content)
+                ]
+                return state
             except Exception as e:
                 logger.warning(f"Analysis LLM call failed (attempt {attempt+1}/{max_retries}): {str(e)}")
                 if attempt < max_retries - 1:
@@ -482,13 +515,10 @@ class AssignmentChecker:
                     time.sleep(backoff_time)
                 else:
                     logger.error(f"Failed to get analysis after {max_retries} attempts")
-                    return {
-                        **state,
-                        "analysis": "Error: Unable to complete analysis due to service issues.",
-                        "next": "grade"  # Continue workflow despite error
-                    }
+                    state["analysis"] = "Error: Unable to complete analysis due to service issues."
+                    return state
     
-    def _grade_node(self, state: CheckerState) -> CheckerState:
+    def _grade_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
         Grade node: Assigns a grade and provides personalized feedback.
         
@@ -499,7 +529,7 @@ class AssignmentChecker:
             state: Current state of the workflow
             
         Returns:
-            Updated state with grade, feedback, and next node to execute
+            Updated state with grade and feedback
         """
         # Extract required information from state
         question = state["question"]
@@ -533,12 +563,12 @@ class AssignmentChecker:
         GRADE: [numerical grade]
         
         FEEDBACK:
-        [Your detailed feedback here, organized into clear sections]
+        [Your detailed feedback here, organized into clear sections with simple headings. Use plain text only - no asterisks, bullet points, or markdown formatting.]
         """
         
         # Set up the conversation with the LLM
         messages = [
-            SystemMessage(content="You are an experienced teacher providing fair and constructive feedback. Be specific, balanced, and focused on helping the student improve."),
+            SystemMessage(content="You are an experienced teacher providing fair and constructive feedback. Be specific, balanced, and focused on helping the student improve. Use plain text formatting only - no asterisks, bullet points, or markdown."),
             HumanMessage(content=grading_prompt)
         ]
         
@@ -569,16 +599,13 @@ class AssignmentChecker:
                 logger.info(f"Assigned grade: {grade}")
                 
                 # Update the state with the grade and feedback
-                return {
-                    **state,
-                    "grade": grade,
-                    "feedback": feedback_text,
-                    "messages": state.get("messages", []) + [
-                        HumanMessage(content=grading_prompt),
-                        AIMessage(content=response.content)
-                    ],
-                    "next": None  # End of workflow
-                }
+                state["grade"] = grade
+                state["feedback"] = feedback_text
+                state["messages"] = state.get("messages", []) + [
+                    HumanMessage(content=grading_prompt),
+                    AIMessage(content=response.content)
+                ]
+                return state
             except Exception as e:
                 logger.warning(f"Grading LLM call failed (attempt {attempt+1}/{max_retries}): {str(e)}")
                 if attempt < max_retries - 1:
@@ -587,48 +614,9 @@ class AssignmentChecker:
                     time.sleep(backoff_time)
                 else:
                     logger.error(f"Failed to get grading after {max_retries} attempts")
-                    return {
-                        **state,
-                        "grade": "Error: Unable to grade due to service issues",
-                        "feedback": "The system encountered an error while trying to grade this assignment. Please try again later.",
-                        "next": None  # End of workflow
-                    }
-        
-    def _build_workflow_graph(self) -> Any:
-        """
-        Build and compile the langgraph workflow for the assignment checker.
-        
-        Creates a directed graph with nodes for each step in the process:
-        The workflow consists of these steps:
-           1. Research - search for relevant information
-           2. Analysis - analyze the student's answer
-           3. Grading - assign a grade and provide feedback
-        
-        Returns: 
-            Compiled workflow graph
-        """
-        # Create a new graph
-        workflow = lg.Graph()
-        
-        # Add nodes to the graph
-        workflow.add_node("research", self._research_node)
-        workflow.add_node("analyze", self._analyze_node)
-        workflow.add_node("grade", self._grade_node)
-        
-        # Define routing from start node
-        def route_start(state):
-            return "research"
-        
-        # Add edges between nodes to define workflow
-        workflow.add_edge("start", "research", route_start)
-        workflow.add_edge("research", "analyze")
-        workflow.add_edge("analyze", "grade")
-        
-        # Compile the graph
-        workflow.compile()
-        logger.info("Workflow graph built successfully")
-        
-        return workflow  # Return the compiled workflow
+                    state["grade"] = "Error: Unable to grade due to service issues"
+                    state["feedback"] = "The system encountered an error while trying to grade this assignment. Please try again later."
+                    return state
         
     def check_assignment(self, question: str, student_answer: str, student_name: str = "", reference_material: str = "") -> Dict[str, Any]:
         """
@@ -644,17 +632,16 @@ class AssignmentChecker:
             Dictionary containing grade, feedback, analysis, and success status
         """
         # Initialize the state for the workflow
-        initial_state = self.CheckerState(
-            question=question,
-            student_answer=student_answer,
-            reference_material=reference_material,
-            search_results=None,
-            analysis=None,
-            grade=None,
-            feedback=None,
-            messages=[],
-            next="start"
-        )
+        initial_state = {
+            "question": question,
+            "student_answer": student_answer,
+            "reference_material": reference_material,
+            "search_results": None,
+            "analysis": None,
+            "grade": None,
+            "feedback": None,
+            "messages": []
+        }
         
         try:
             logger.info(f"Starting assignment checking process for {student_name if student_name else 'a student'}")
@@ -664,13 +651,15 @@ class AssignmentChecker:
                 logger.error("Workflow graph not initialized")
                 raise ValueError("Assignment checking workflow not initialized properly")
                 
-            result = self.checker_app.invoke(initial_state)
+            # Execute the workflow with the initial state
+            # No need to specify input node as the graph has a START edge
+            final_state = self.checker_app.invoke(initial_state)
             
             # Prepare metadata for vector database storage
             metadata = {
                 "student_name": student_name if student_name else "Unknown",
                 "question": question,
-                "grade": result.get("grade", "No grade"),
+                "grade": final_state.get("grade", "No grade"),
                 "timestamp": datetime.now().isoformat(),
                 "type": "assignment"
             }
@@ -683,9 +672,9 @@ class AssignmentChecker:
             
             # Return the results
             return {
-                "grade": result.get("grade", "Unable to determine grade"),
-                "feedback": result.get("feedback", "No feedback generated"),
-                "analysis": result.get("analysis", "No analysis performed"),
+                "grade": final_state.get("grade", "Unable to determine grade"),
+                "feedback": final_state.get("feedback", "No feedback generated"),
+                "analysis": final_state.get("analysis", "No analysis performed"),
                 "document_id": doc_id,
                 "success": True
             }

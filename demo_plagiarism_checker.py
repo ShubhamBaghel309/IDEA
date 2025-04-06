@@ -5,7 +5,7 @@ This can be used to test the core functionality of the plagiarism.py module
 
 import os
 import tempfile
-from plagiarism import calculate_plagiarism, extract_text_from_docx, read_text_file
+from assistant.core.plagiarism import calculate_plagiarism, extract_text_from_docx, read_text_file
 import docx
 
 def create_test_docx(content, filename):
