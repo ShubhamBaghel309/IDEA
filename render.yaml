@@ -10,10 +10,11 @@ services:
       - key: PORT
         value: 8000
 
-staticSites:
-  - name: GDSC-frontent
+  - type: web
+    name: GDSC-frontend
+    env: node
     buildCommand: cd frontent && npm install && npm run build
-    publishDirectory: frontent/dist
+    startCommand: cd frontent && npm run preview
     envVars:
       - key: VITE_API_URL
         sync: false
