@@ -10,8 +10,8 @@ services:
       - key: PORT
         value: 8000
 
-  - type: static
-    name: GDSC-frontend
+staticSites:
+  - name: GDSC-frontent
     buildCommand: cd frontent && npm install && npm run build
     publishDirectory: frontent/dist
     envVars:
