@@ -25,6 +25,11 @@ import chromadb
 import time
 from duckduckgo_search import DDGS
 import requests.exceptions
+import ast
+import re
+import nbformat
+from pathlib import Path
+from fastapi import HTTPException
 
 # Define ChromaDBError here for compatibility
 try:
@@ -95,10 +100,289 @@ class AssignmentChecker:
         
         # Initialize ChromaDB vector store
         self._initialize_vector_db()
-        
-        # Build the workflow graph for assignment checking process
+          # Build the workflow graph for assignment checking process
         self.checker_app = self._build_workflow_graph()
         logger.info("AssignmentChecker initialized successfully with vector database")
+    
+    def analyze_jupyter_notebook(self, notebook_content: str) -> Dict[str, Any]:
+        """
+        Analyze Jupyter notebook content for code quality and educational value.
+        
+        Args:
+            notebook_content: The notebook file content as a string
+            
+        Returns:
+            Dictionary containing detailed analysis of the notebook
+        """
+        try:
+            # Parse the notebook
+            notebook = nbformat.reads(notebook_content, as_version=4)
+            
+            analysis = {
+                'total_cells': len(notebook.cells),
+                'code_cells': 0,
+                'markdown_cells': 0,
+                'code_blocks': [],
+                'complexity_score': 0,
+                'issues': [],
+                'optimized_solutions': []
+            }
+            
+            for i, cell in enumerate(notebook.cells):
+                if cell.cell_type == 'code':
+                    analysis['code_cells'] += 1
+                    
+                    # Analyze each code cell
+                    code_analysis = self._analyze_python_code(cell.source, f"Cell {i+1}")
+                    analysis['code_blocks'].append(code_analysis)
+                    analysis['complexity_score'] += code_analysis.get('complexity', 0)
+                    
+                    if code_analysis.get('issues'):
+                        analysis['issues'].extend(code_analysis['issues'])
+                    
+                elif cell.cell_type == 'markdown':
+                    analysis['markdown_cells'] += 1
+            
+            # Calculate average complexity
+            if analysis['code_cells'] > 0:
+                analysis['complexity_score'] = analysis['complexity_score'] / analysis['code_cells']
+            
+            return analysis
+            
+        except Exception as e:
+            logger.error(f"Error analyzing Jupyter notebook: {str(e)}")
+            return {
+                'error': f"Failed to analyze notebook: {str(e)}",
+                'total_cells': 0,
+                'code_cells': 0,
+                'markdown_cells': 0
+            }
+    
+    def _analyze_python_code(self, code: str, block_name: str = "Code Block") -> Dict[str, Any]:
+        """
+        Analyze Python code using AST parsing for detailed insights.
+        
+        Args:
+            code: Python code to analyze
+            block_name: Name identifier for the code block
+            
+        Returns:
+            Dictionary containing code analysis results
+        """
+        analysis = {
+            'block_name': block_name,
+            'lines_of_code': len([line for line in code.split('\n') if line.strip()]),
+            'complexity': 0,
+            'functions': [],
+            'classes': [],
+            'imports': [],
+            'issues': [],
+            'suggestions': []
+        }
+        
+        try:
+            tree = ast.parse(code)
+            
+            for node in ast.walk(tree):
+                # Count functions
+                if isinstance(node, ast.FunctionDef):
+                    analysis['functions'].append(node.name)
+                    analysis['complexity'] += 1
+                
+                # Count classes
+                elif isinstance(node, ast.ClassDef):
+                    analysis['classes'].append(node.name)
+                    analysis['complexity'] += 2
+                
+                # Count imports
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    if isinstance(node, ast.Import):
+                        for alias in node.names:
+                            analysis['imports'].append(alias.name)
+                    else:
+                        analysis['imports'].append(f"from {node.module}")
+                
+                # Count control structures
+                elif isinstance(node, (ast.If, ast.For, ast.While, ast.Try)):
+                    analysis['complexity'] += 1
+            
+            # Check for common issues
+            self._check_code_issues(code, analysis)
+            
+        except SyntaxError as e:
+            analysis['issues'].append(f"Syntax error: {str(e)}")
+        except Exception as e:
+            analysis['issues'].append(f"Analysis error: {str(e)}")
+        
+        return analysis
+    
+    def _check_code_issues(self, code: str, analysis: Dict[str, Any]):
+        """Check for common code issues and provide suggestions."""
+        lines = code.split('\n')
+        
+        for i, line in enumerate(lines, 1):
+            # Check for long lines
+            if len(line) > 100:
+                analysis['issues'].append(f"Line {i}: Line too long ({len(line)} chars)")
+                analysis['suggestions'].append(f"Line {i}: Consider breaking long line into multiple lines")
+            
+            # Check for missing docstrings in functions
+            if line.strip().startswith('def ') and i < len(lines) - 1:
+                next_line = lines[i].strip() if i < len(lines) else ""
+                if not next_line.startswith('"""') and not next_line.startswith("'''"):
+                    func_name = line.split('def ')[1].split('(')[0]
+                    analysis['suggestions'].append(f"Function '{func_name}': Consider adding a docstring")
+    
+    def analyze_cpp_file(self, cpp_content: str) -> Dict[str, Any]:
+        """
+        Analyze C++ file content for syntax and structure.
+        
+        Args:
+            cpp_content: The C++ file content as a string
+            
+        Returns:
+            Dictionary containing C++ code analysis
+        """
+        analysis = {
+            'lines_of_code': len([line for line in cpp_content.split('\n') if line.strip()]),
+            'includes': [],
+            'functions': [],
+            'classes': [],
+            'namespaces': [],
+            'issues': [],
+            'suggestions': []
+        }
+        
+        try:
+            lines = cpp_content.split('\n')
+            
+            for i, line in enumerate(lines, 1):
+                line = line.strip()
+                
+                # Find includes
+                if line.startswith('#include'):
+                    analysis['includes'].append(line)
+                
+                # Find function definitions (basic regex)
+                func_match = re.search(r'(\w+)\s+(\w+)\s*\([^)]*\)\s*{', line)
+                if func_match and not line.startswith('//'):
+                    analysis['functions'].append(func_match.group(2))
+                
+                # Find class definitions
+                class_match = re.search(r'class\s+(\w+)', line)
+                if class_match:
+                    analysis['classes'].append(class_match.group(1))
+                
+                # Find namespaces
+                namespace_match = re.search(r'namespace\s+(\w+)', line)
+                if namespace_match:
+                    analysis['namespaces'].append(namespace_match.group(1))
+                
+                # Check for common issues
+                if len(line) > 120:
+                    analysis['issues'].append(f"Line {i}: Line too long ({len(line)} chars)")
+                
+                if 'using namespace std' in line:
+                    analysis['suggestions'].append(f"Line {i}: Consider avoiding 'using namespace std' in headers")
+        
+        except Exception as e:
+            analysis['issues'].append(f"Analysis error: {str(e)}")
+        
+        return analysis
+    
+    def analyze_subject_content(self, content: str, subject: str) -> Dict[str, Any]:
+        """
+        Analyze content for subject-specific educational value.
+        
+        Args:
+            content: The content to analyze
+            subject: The subject area (history, science, math, etc.)
+            
+        Returns:
+            Dictionary containing subject-specific analysis
+        """
+        analysis = {
+            'subject': subject,
+            'key_concepts': [],
+            'factual_accuracy': 'pending',
+            'depth_score': 0,
+            'recommendations': []
+        }
+        
+        # Subject-specific keyword analysis
+        subject_keywords = {
+            'history': ['timeline', 'century', 'empire', 'revolution', 'war', 'ancient', 'medieval'],
+            'science': ['hypothesis', 'experiment', 'theory', 'data', 'analysis', 'method', 'result'],
+            'math': ['equation', 'formula', 'theorem', 'proof', 'calculate', 'solve', 'graph'],
+            'literature': ['theme', 'character', 'plot', 'metaphor', 'symbolism', 'analysis'],
+            'programming': ['function', 'variable', 'loop', 'condition', 'algorithm', 'data structure']
+        }
+        
+        keywords = subject_keywords.get(subject.lower(), [])
+        content_lower = content.lower()
+        
+        for keyword in keywords:
+            if keyword in content_lower:
+                analysis['key_concepts'].append(keyword)
+        
+        # Calculate depth score based on content length and key concepts
+        word_count = len(content.split())
+        concept_count = len(analysis['key_concepts'])
+        
+        analysis['depth_score'] = min(10, (word_count / 100) + (concept_count * 2))
+        
+        # Provide recommendations
+        if concept_count < 3:
+            analysis['recommendations'].append(f"Consider including more {subject}-specific terminology")
+        
+        if word_count < 200:
+            analysis['recommendations'].append("Consider expanding the response with more detailed explanations")
+        
+        return analysis
+    
+    def generate_optimized_solution(self, code: str, issues: List[str]) -> str:
+        """
+        Generate an optimized version of problematic code.
+        
+        Args:
+            code: The original code with issues
+            issues: List of identified issues
+            
+        Returns:
+            Optimized code suggestions
+        """
+        if not issues:
+            return "No optimization needed - code looks good!"
+        
+        optimization_prompt = f"""
+        Original code:
+        {code}
+        
+        Identified issues:
+        {', '.join(issues)}
+        
+        Please provide an optimized version of this code that addresses the identified issues.
+        Focus on:
+        1. Improving readability
+        2. Following best practices
+        3. Fixing any syntax or logic errors
+        4. Adding appropriate comments
+        
+        Provide only the improved code with brief explanations of changes.
+        """
+        
+        try:
+            messages = [
+                SystemMessage(content="You are an expert code reviewer and optimizer. Provide clean, well-documented code improvements."),
+                HumanMessage(content=optimization_prompt)
+            ]
+            
+            response = self.llm.invoke(messages, timeout=60)
+            return response.content
+            
+        except Exception as e:
+            logger.error(f"Error generating optimized solution: {str(e)}")
+            return f"Error generating optimization: {str(e)}"
         
     def process_pdf(self, pdf_file: BinaryIO) -> Tuple[str, str]:
         """
@@ -324,8 +608,7 @@ class AssignmentChecker:
         student_answer: str  # The student's submitted answer
         reference_material: str  # Reference material to compare against (optional)
         search_results: str  # Results from web searches
-        analysis: str  # Analysis of the student's work
-        grade: Optional[str]  # The grade assigned to the work
+        analysis: str  # Analysis of the student's work        grade: Optional[str]  # The grade assigned to the work
         feedback: Optional[str]  # Detailed feedback for the student
         messages: List[Any]  # History of messages in the workflow
         next: Optional[str]  # Next node to execute in the workflow
@@ -335,10 +618,12 @@ class AssignmentChecker:
         Build and compile the langgraph workflow for the assignment checker.
         
         Creates a directed graph with nodes for each step in the process:
-        The workflow consists of these steps:
-           1. Research - search for relevant information
-           2. Analysis - analyze the student's answer
-           3. Grading - assign a grade and provide feedback
+        The enhanced workflow consists of these steps:
+           1. File Analysis - analyze file type and extract detailed information
+           2. Research - search for relevant information
+           3. Detailed Analysis - comprehensive analysis including code quality
+           4. Solution Generation - generate optimized solutions for code issues
+           5. Comprehensive Grading - assign grade and provide detailed feedback
         
         Returns: 
             Compiled workflow graph
@@ -347,33 +632,34 @@ class AssignmentChecker:
         # This approach is compatible with langgraph 0.3.25
         workflow = lg.Graph()
         
-        # Add nodes to the graph
+        # Add nodes to the enhanced graph
+        workflow.add_node("file_analysis", self._file_analysis_node)
         workflow.add_node("research", self._research_node)
-        workflow.add_node("analyze", self._analyze_node)
-        workflow.add_node("grade", self._grade_node)
+        workflow.add_node("detailed_analysis", self._detailed_analysis_node)
+        workflow.add_node("solution_generation", self._solution_generation_node)
+        workflow.add_node("comprehensive_grading", self._comprehensive_grading_node)
         
         # Add START edge - this is critical
-        workflow.add_edge(lg.START, "research")
+        workflow.add_edge(lg.START, "file_analysis")
         
-        # Add fixed edges between nodes to define workflow
-        workflow.add_edge("research", "analyze")
-        workflow.add_edge("analyze", "grade")
+        # Add fixed edges between nodes to define enhanced workflow
+        workflow.add_edge("file_analysis", "research")
+        workflow.add_edge("research", "detailed_analysis")
+        workflow.add_edge("detailed_analysis", "solution_generation")
+        workflow.add_edge("solution_generation", "comprehensive_grading")
         
-        # Add edge from grade to END
-        workflow.add_edge("grade", lg.END)
+        # Add edge from comprehensive_grading to END
+        workflow.add_edge("comprehensive_grading", lg.END)
         
         # Compile the graph
         compiled_workflow = workflow.compile()
-        logger.info("Workflow graph built successfully")
+        logger.info("Enhanced workflow graph built successfully")
         
         return compiled_workflow
         
     def _research_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
         Research node: Searches for relevant information to help grade the assignment.
-        
-        This node generates a search query based on the question and answer,
-        then performs a web search to gather relevant information.
         
         Args:
             state: Current state of the workflow
@@ -395,47 +681,40 @@ class AssignmentChecker:
         or markdown formatting. Just provide plain text terms.
         """
         
-        # Set up the conversation with the LLM
-        messages = [
-            SystemMessage(
-                content="You are an expert educational research assistant. Generate effective and simple search queries to find relevant information that will help verify student answers. Do not use formatting like asterisks, bullets, or markdown."
-            ),
-            HumanMessage(
-                content=research_prompt
-            )
-        ]
-        
-        # Handle timeout and add retry logic
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                response = self.llm.invoke(
-                    messages,
-                    timeout=60  # 60 second timeout
+        try:
+            # Set up the conversation with the LLM
+            messages = [
+                SystemMessage(
+                    content="You are an expert educational research assistant. Generate effective and simple search queries to find relevant information that will help verify student answers. Do not use formatting like asterisks, bullets, or markdown."
+                ),
+                HumanMessage(
+                    content=research_prompt
                 )
-                search_query = response.content
-                logger.info(f"Generated search query: {search_query}")
-                
-                # Execute the search query
-                search_results = self.search_web(search_query)
-                
-                # Update and return the state
-                state["search_results"] = search_results
-                state["messages"] = state.get("messages", []) + [
-                    HumanMessage(content=research_prompt),
-                    AIMessage(content=response.content)
-                ]
-                return state
-            except Exception as e:
-                logger.warning(f"LLM call failed (attempt {attempt+1}/{max_retries}): {str(e)}")
-                if attempt < max_retries - 1:
-                    backoff_time = 2 ** attempt  # Exponential backoff
-                    logger.info(f"Retrying in {backoff_time} seconds...")
-                    time.sleep(backoff_time)
-                else:
-                    logger.error(f"Failed to get LLM response after {max_retries} attempts")
-                    state["search_results"] = "Error: Unable to generate search query due to LLM service issues."
-                    return state
+            ]
+            
+            # Get search query from LLM
+            response = self.llm.invoke(messages)
+            search_query = response.content.strip()
+            
+            try:
+                # Attempt web search
+                search_results = self.search_web(query=search_query)
+            except Exception as search_error:
+                # Silently handle search errors and continue
+                logger.debug(f"Search failed: {str(search_error)}")
+                search_results = None
+            
+            # Update state with search results
+            state["search_results"] = search_results
+            logger.info(f"Generated search query: {search_query}")
+            
+            return state
+            
+        except Exception as e:
+            # Handle any other errors silently
+            logger.debug(f"Research error: {str(e)}")
+            state["search_results"] = None
+            return state
     
     def _analyze_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -500,13 +779,14 @@ class AssignmentChecker:
                     timeout=120  # 2-minute timeout for analysis
                 )
                 
-                # Update state
+                # Update state - FIXED INDENTATION
                 state["analysis"] = response.content
                 state["messages"] = state.get("messages", []) + [
                     HumanMessage(content=analysis_prompt),
                     AIMessage(content=response.content)
                 ]
                 return state
+            
             except Exception as e:
                 logger.warning(f"Analysis LLM call failed (attempt {attempt+1}/{max_retries}): {str(e)}")
                 if attempt < max_retries - 1:
@@ -516,108 +796,356 @@ class AssignmentChecker:
                 else:
                     logger.error(f"Failed to get analysis after {max_retries} attempts")
                     state["analysis"] = "Error: Unable to complete analysis due to service issues."
-                    return state
-    
-    def _grade_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Grade node: Assigns a grade and provides personalized feedback.
+                    return state  # FIXED: Added proper return statement
         
-        This node uses the analysis to generate a grade and detailed feedback for
-        the student, focusing on helping them improve.
+    def _file_analysis_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        File Analysis node: Analyzes the file type and extracts detailed information.
+        
+        This node determines the file type and performs specialized analysis
+        for different formats (.ipynb, .py, .cpp, etc.).
         
         Args:
             state: Current state of the workflow
             
         Returns:
-            Updated state with grade and feedback
+            Updated state with file analysis results
         """
-        # Extract required information from state
+        student_answer = state["student_answer"]
+        question = state["question"]
+        
+        # Initialize analysis results
+        file_analysis = {
+            'file_type': 'text',
+            'detailed_analysis': {},
+            'issues_found': [],
+            'suggestions': []
+        }
+        
+        try:
+            # Detect file type based on content patterns
+            if student_answer.strip().startswith('{') and '"cells"' in student_answer:
+                # Jupyter notebook
+                file_analysis['file_type'] = 'jupyter_notebook'
+                notebook_analysis = self.analyze_jupyter_notebook(student_answer)
+                file_analysis['detailed_analysis'] = notebook_analysis
+                
+            elif any(pattern in student_answer for pattern in ['def ', 'import ', 'class ', 'if __name__']):
+                # Python code
+                file_analysis['file_type'] = 'python_code'
+                code_analysis = self._analyze_python_code(student_answer, "Main Code")
+                file_analysis['detailed_analysis'] = code_analysis
+                
+            elif any(pattern in student_answer for pattern in ['#include', 'int main', 'class ', 'namespace ']):
+                # C++ code
+                file_analysis['file_type'] = 'cpp_code'
+                cpp_analysis = self.analyze_cpp_file(student_answer)
+                file_analysis['detailed_analysis'] = cpp_analysis
+                
+            # Extract subject from question for subject-specific analysis
+            subject = 'general'
+            if any(keyword in question.lower() for keyword in ['history', 'historical']):
+                subject = 'history'
+            elif any(keyword in question.lower() for keyword in ['science', 'experiment', 'hypothesis']):
+                subject = 'science'
+            elif any(keyword in question.lower() for keyword in ['math', 'equation', 'calculate']):
+                subject = 'math'
+            elif any(keyword in question.lower() for keyword in ['programming', 'code', 'algorithm']):
+                subject = 'programming'
+            
+            # Perform subject-specific analysis
+            subject_analysis = self.analyze_subject_content(student_answer, subject)
+            file_analysis['subject_analysis'] = subject_analysis
+            
+            # Update state
+            state["file_analysis"] = file_analysis
+            logger.info(f"File analysis completed - Type: {file_analysis['file_type']}, Subject: {subject}")
+            
+        except Exception as e:
+            logger.error(f"Error in file analysis: {str(e)}")
+            state["file_analysis"] = {
+                'file_type': 'text',
+                'error': f"Analysis error: {str(e)}"
+            }
+        
+        return state
+    
+    def _detailed_analysis_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Detailed Analysis node: Performs comprehensive analysis including code quality.
+        
+        This node combines the file analysis results with educational assessment
+        to provide detailed insights about the student's work.
+        
+        Args:
+            state: Current state of the workflow
+            
+        Returns:
+            Updated state with detailed analysis
+        """
         question = state["question"]
         student_answer = state["student_answer"]
-        analysis = state.get("analysis", "")
+        search_results = state.get("search_results", "")
+        file_analysis = state.get("file_analysis", {})
         
-        # Handle large student answers that may exceed token limits
-        max_length = 6000
-        if len(student_answer) > max_length:
-            logger.info(f"Student answer exceeds {max_length} chars, truncating for grading")
-            student_answer = student_answer[:max_length] + f"\n\n[Note: Answer truncated from {len(student_answer)} characters due to length limits]"
+        # Create comprehensive analysis prompt
+        analysis_prompt = f"""
+        Please provide a comprehensive analysis of this student's work:
         
-        # Create a prompt for grading and feedback
-        grading_prompt = f"""
-        Based on your analysis, please:
+        Assignment Question: {question}
         
-        1. Assign a numerical grade (0-100) to this answer
-        2. Provide detailed, constructive feedback that will help the student improve
-        3. Include specific examples from their answer to illustrate your points
-        4. Suggest concrete steps for improvement
-        5. Highlight strengths to reinforce positive aspects
+        Student's Answer: {student_answer[:6000]}{"...[truncated]" if len(student_answer) > 6000 else ""}
         
-        Assignment question: {question}
+        File Analysis Results: {json.dumps(file_analysis, indent=2)}
         
-        Student's answer: {student_answer}
+        Research Context: {search_results}
         
-        Your analysis: {analysis}
+        Analyze the following aspects:
+        1. Technical Accuracy: Are the concepts, facts, and implementations correct?
+        2. Code Quality (if applicable): Structure, readability, best practices
+        3. Educational Value: Does the work demonstrate learning and understanding?
+        4. Completeness: Are all aspects of the question addressed?
+        5. Critical Thinking: Evidence of analysis, problem-solving, and insight
+        6. Subject-Specific Requirements: Domain-specific criteria
         
-        Format your response as follows:
-        
-        GRADE: [numerical grade]
-        
-        FEEDBACK:
-        [Your detailed feedback here, organized into clear sections with simple headings. Use plain text only - no asterisks, bullet points, or markdown formatting.]
+        Provide detailed feedback in each area with specific examples and suggestions.
+        The feedback should be in a structured format with clear headings and subheadings.
+        The feedback should be in a clear and concise manner.
+        The feedback should be in a way that is easy to understand and follow.
+        Theere should not be any unnecassary symbols like "* "asterisks, bullet points, or markdown formatting.
         """
         
-        # Set up the conversation with the LLM
-        messages = [
-            SystemMessage(content="You are an experienced teacher providing fair and constructive feedback. Be specific, balanced, and focused on helping the student improve. Use plain text formatting only - no asterisks, bullet points, or markdown."),
-            HumanMessage(content=grading_prompt)
-        ]
+        try:
+            messages = [
+                SystemMessage(content="You are an expert educational analyst specializing in comprehensive assessment. Provide detailed, constructive analysis focusing on both technical and educational aspects."),
+                HumanMessage(content=analysis_prompt)
+            ]
+            
+            response = self.llm.invoke(messages, timeout=120)
+            
+            state["detailed_analysis"] = response.content
+            state["messages"] = state.get("messages", []) + [
+                HumanMessage(content=analysis_prompt),
+                AIMessage(content=response.content)
+            ]
+            
+        except Exception as e:
+            logger.error(f"Error in detailed analysis: {str(e)}")
+            state["detailed_analysis"] = f"Error in detailed analysis: {str(e)}"
         
-        # Handle timeout and add retry logic
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                response = self.llm.invoke(
-                    messages,
-                    timeout=90  # 90-second timeout for grading
-                )
+        return state
+    
+    def _solution_generation_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Solution Generation node: Generates optimized solutions for identified issues.
+        
+        This node creates improved solutions for any code or content issues
+        found during analysis.
+        
+        Args:
+            state: Current state of the workflow
+            
+        Returns:
+            Updated state with optimized solutions
+        """
+        student_answer = state["student_answer"]
+        file_analysis = state.get("file_analysis", {})
+        detailed_analysis = state.get("detailed_analysis", "")
+        
+        optimized_solutions = []
+        
+        try:
+            # Generate solutions for code-related submissions
+            if file_analysis.get('file_type') in ['python_code', 'cpp_code', 'jupyter_notebook']:
+                detailed_info = file_analysis.get('detailed_analysis', {})
                 
-                # Extract grade from response
-                feedback_text = response.content
-                grade = "See detailed feedback"
+                if isinstance(detailed_info, dict):
+                    issues = detailed_info.get('issues', [])
+                    if issues:
+                        solution = self.generate_optimized_solution(student_answer, issues)
+                        optimized_solutions.append({
+                            'type': 'code_optimization',
+                            'issues': issues,
+                            'solution': solution
+                        })
                 
-                try:
-                    if "GRADE:" in feedback_text:
-                        grade_lines = [line for line in feedback_text.split('\n') if "GRADE:" in line]
-                        if grade_lines:
-                            grade_line = grade_lines[0]
-                            grade = grade_line.split("GRADE:")[1].strip()
-                except (IndexError, AttributeError) as ex:
-                    logger.warning(f"Could not extract grade from feedback text: {str(ex)}")
-                except Exception as ex:
-                    logger.warning(f"Unexpected error extracting grade: {str(ex)}")
-                    
-                logger.info(f"Assigned grade: {grade}")
+                # For Jupyter notebooks, analyze individual code blocks
+                if file_analysis.get('file_type') == 'jupyter_notebook':
+                    code_blocks = detailed_info.get('code_blocks', [])
+                    for block in code_blocks:
+                        if block.get('issues'):
+                            solution = self.generate_optimized_solution(
+                                f"# {block.get('block_name', 'Code Block')}\n" + student_answer,
+                                block['issues']
+                            )
+                            optimized_solutions.append({
+                                'type': 'notebook_block_optimization',
+                                'block': block.get('block_name', 'Unknown Block'),
+                                'issues': block['issues'],
+                                'solution': solution
+                            })
+            
+            # Generate general improvement suggestions
+            if "improvement" in detailed_analysis.lower() or "suggest" in detailed_analysis.lower():
+                general_prompt = f"""
+                Based on the detailed analysis, provide specific actionable suggestions for improvement:
                 
-                # Update the state with the grade and feedback
-                state["grade"] = grade
-                state["feedback"] = feedback_text
-                state["messages"] = state.get("messages", []) + [
-                    HumanMessage(content=grading_prompt),
-                    AIMessage(content=response.content)
+                Analysis: {detailed_analysis}
+                
+                Provide 3-5 concrete steps the student can take to improve their work.
+                """
+                
+                messages = [
+                    SystemMessage(content="You are an educational mentor providing specific, actionable improvement suggestions."),
+                    HumanMessage(content=general_prompt)
                 ]
-                return state
-            except Exception as e:
-                logger.warning(f"Grading LLM call failed (attempt {attempt+1}/{max_retries}): {str(e)}")
-                if attempt < max_retries - 1:
-                    backoff_time = 2 ** attempt  # Exponential backoff
-                    logger.info(f"Retrying grading in {backoff_time} seconds...")
-                    time.sleep(backoff_time)
-                else:
-                    logger.error(f"Failed to get grading after {max_retries} attempts")
-                    state["grade"] = "Error: Unable to grade due to service issues"
-                    state["feedback"] = "The system encountered an error while trying to grade this assignment. Please try again later."
-                    return state
+                
+                response = self.llm.invoke(messages, timeout=60)
+                optimized_solutions.append({
+                    'type': 'general_improvements',
+                    'suggestions': response.content
+                })
+            
+            state["optimized_solutions"] = optimized_solutions
+            logger.info(f"Generated {len(optimized_solutions)} optimization solutions")
+            
+        except Exception as e:
+            logger.error(f"Error generating solutions: {str(e)}")
+            state["optimized_solutions"] = [{
+                'type': 'error',
+                'message': f"Error generating solutions: {str(e)}"
+            }]
         
+        return state
+    
+    def _comprehensive_grading_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Comprehensive grading node that evaluates the assignment and provides structured feedback.
+        
+        Args:
+            state: Current state of the workflow
+            
+        Returns:
+            Updated state with grading information
+        """
+        try:
+            # Extract information from state
+            question = state.get('question', '')
+            student_answer = state.get('student_answer', '')
+            
+            # Create a structured grading prompt
+            grading_prompt = f"""
+            You are a teacher grading an assignment. Provide a clear, structured report of the student's answers.
+            
+            Question: {question}
+            Student's Answer: {student_answer}
+            
+            Format your response exactly as follows:
+            
+            GRADE: [numerical grade out of 100]
+            
+            QUESTION ANALYSIS:
+            [For each question in the assignment, list as:]
+            Q1: [Question text]
+            Status: [CORRECT/INCORRECT]
+            Student's Answer: [What student wrote]
+            Correct Answer: [If incorrect, provide the correct answer]
+            Explanation: [If incorrect, briefly explain why]
+            
+            [Repeat for each question]
+              SUMMARY:
+            Total Correct Answers: [number]
+            Total Incorrect Answers: [number]
+            Key Strengths: [List 2-3 main strengths]
+            Areas for Improvement: [List 2-3 main areas to improve]
+
+            Return in plain text format with clear headings and paragraphs.
+            Do not use JSON format, asterisks, bullet points, or markdown formatting.
+            Use simple text with clear sections and line breaks for readability.
+            """
+            
+            # Get grading from LLM
+            response = self.llm.invoke([
+                SystemMessage(content="You are a teacher providing clear, structured feedback. Focus on accuracy and provide specific corrections where needed."),
+                HumanMessage(content=grading_prompt)
+            ])
+            
+            # Ensure we have valid feedback
+            feedback = response.content.strip()
+            if not feedback:
+                feedback = "No feedback generated"
+            
+            # Update state with grading information
+            state['grade'] = feedback
+            state['feedback'] = feedback  # Explicitly set feedback
+            
+            return state
+            
+        except Exception as e:
+            logger.error(f"Error in grading: {str(e)}")
+            error_feedback = f"Error in grading process: {str(e)}"
+            state['grade'] = error_feedback
+            state['feedback'] = error_feedback  # Ensure feedback is set even in error case
+            return state
+    
+    def _grade_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Final grading node that provides a clear, concise grade and feedback.
+        
+        Args:
+            state: Current state of the workflow
+            
+        Returns:
+            Updated state with final grade and feedback
+        """
+        try:
+            # Extract information from state
+            question = state.get('question', '')
+            student_answer = state.get('student_answer', '')
+            analysis = state.get('analysis', '')
+            
+            # Create a focused grading prompt
+            grading_prompt = f"""
+            You are a strict but fair teacher. Grade this assignment based on accuracy and completeness.
+            
+            Question: {question}
+            Student's Answer: {student_answer}
+            
+            Provide:
+            1. A numerical grade (0-100)
+            2. A brief explanation of the grade
+            3. What was correct
+            4. What was incorrect
+            
+            Format as:
+            GRADE: [number]
+            
+            CORRECT:
+            - [List correct points]
+            
+            INCORRECT:
+            - [List incorrect points]
+            
+            EXPLANATION:
+            [Brief explanation of the grade]
+            """
+            
+            # Get grading from LLM
+            response = self.llm.invoke([
+                SystemMessage(content="You are a strict but fair teacher. Provide clear, concise grading feedback."),
+                HumanMessage(content=grading_prompt)
+            ])
+            
+            # Update state with grading information
+            state['grade'] = response.content
+            
+            return state
+            
+        except Exception as e:
+            logger.error(f"Error in grading: {str(e)}")
+            state['grade'] = "Error in grading process"
+            return state
+    
     def check_assignment(self, question: str, student_answer: str, student_name: str = "", reference_material: str = "") -> Dict[str, Any]:
         """
         Check a student assignment and provide grading and feedback.
@@ -631,13 +1159,16 @@ class AssignmentChecker:
         Returns:
             Dictionary containing grade, feedback, analysis, and success status
         """
-        # Initialize the state for the workflow
+        # Initialize the state for the enhanced workflow
         initial_state = {
             "question": question,
             "student_answer": student_answer,
             "reference_material": reference_material,
             "search_results": None,
-            "analysis": None,
+            "file_analysis": None,
+            "detailed_analysis": None,
+            "optimized_solutions": None,
+            "analysis": None,  # Keep for backward compatibility
             "grade": None,
             "feedback": None,
             "messages": []
@@ -652,7 +1183,6 @@ class AssignmentChecker:
                 raise ValueError("Assignment checking workflow not initialized properly")
                 
             # Execute the workflow with the initial state
-            # No need to specify input node as the graph has a START edge
             final_state = self.checker_app.invoke(initial_state)
             
             # Prepare metadata for vector database storage
@@ -670,32 +1200,35 @@ class AssignmentChecker:
                 metadata=metadata
             )
             
-            # Return the results
+            # Ensure feedback is not None and properly formatted
+            feedback = final_state.get("grade", "No feedback generated")
+            if feedback is None:
+                feedback = "No feedback generated"
+            
+            # Return the enhanced results with explicit feedback
             return {
                 "grade": final_state.get("grade", "Unable to determine grade"),
-                "feedback": final_state.get("feedback", "No feedback generated"),
-                "analysis": final_state.get("analysis", "No analysis performed"),
+                "feedback": feedback,  # Use the ensured feedback
+                "analysis": final_state.get("detailed_analysis", final_state.get("analysis", "No analysis performed")),
+                "file_analysis": final_state.get("file_analysis", {}),
+                "optimized_solutions": final_state.get("optimized_solutions", []),
                 "document_id": doc_id,
                 "success": True
             }
             
-        except ValueError as e:
-            logger.error(f"Value error in assignment checking workflow: {e}")
-            return {
-                "grade": "Error",
-                "feedback": f"Invalid input: {str(e)}",
-                "analysis": "",
-                "success": False
-            }
         except Exception as e:
-            logger.error(f"Error in assignment checking workflow: {e}")
+            logger.error(f"Error in assignment checking: {str(e)}")
+            error_feedback = f"Error processing assignment: {str(e)}"
             return {
                 "grade": "Error",
-                "feedback": f"An error occurred during checking: {str(e)}",
-                "analysis": "",
+                "feedback": error_feedback,  # Ensure feedback is set even in error case
+                "analysis": "Error occurred during analysis",
+                "file_analysis": {},
+                "optimized_solutions": [],
+                "document_id": None,
                 "success": False
             }
-            
+
     def check_pdf_assignment(self, pdf_file: BinaryIO, assignment_prompt: str, student_name: str = "", reference_material: str = "") -> Dict[str, Any]:
         """
         Process a PDF assignment file, extract text, and check the entire assignment.
@@ -759,3 +1292,118 @@ class AssignmentChecker:
                 "feedback": f"An error occurred while processing the assignment: {str(e)}",
                 "success": False
             }
+
+    def analyze_assignment(self, assignment_text: str) -> dict:
+        """Analyze an assignment submission and provide detailed feedback."""
+        try:
+            # Initialize feedback structure
+            feedback = {
+                "overallScore": 0,
+                "questions": [],
+                "suggestions": [],
+                "warnings": {
+                    "plagiarism": False,
+                    "aiGenerated": False
+                }
+            }
+
+            # Check for AI-generated content
+            if self.detect_ai_content(assignment_text):
+                feedback["warnings"]["aiGenerated"] = True
+                feedback["suggestions"].append("Your submission appears to be AI-generated. Please submit original work.")
+
+            # Check for plagiarism
+            if self.detect_plagiarism(assignment_text):
+                feedback["warnings"]["plagiarism"] = True
+                feedback["suggestions"].append("Potential plagiarism detected. Please ensure all work is original.")
+
+            # Extract questions and answers
+            qa_pairs = self.extract_qa_pairs(assignment_text)
+            
+            total_score = 0
+            for qa in qa_pairs:
+                question = qa["question"]
+                student_answer = qa["answer"]
+                
+                # Get correct answer and explanation
+                correct_answer = self.get_correct_answer(question)
+                is_correct = self.compare_answers(student_answer, correct_answer)
+                
+                # Calculate score for this question (0-100)
+                question_score = self.calculate_question_score(student_answer, correct_answer)
+                total_score += question_score
+                
+                # Add question feedback
+                feedback["questions"].append({
+                    "question": question,
+                    "studentAnswer": student_answer,
+                    "isCorrect": is_correct,
+                    "correctAnswer": correct_answer if not is_correct else None,
+                    "explanation": self.get_explanation(question) if not is_correct else None,
+                    "score": question_score
+                })
+
+            # Calculate overall score
+            feedback["overallScore"] = round(total_score / len(qa_pairs)) if qa_pairs else 0
+
+            # Add general suggestions based on overall performance
+            if feedback["overallScore"] < 60:
+                feedback["suggestions"].extend([
+                    "Review the course materials and notes thoroughly.",
+                    "Practice answering similar questions to improve understanding.",
+                    "Consider seeking help from your instructor or teaching assistant."
+                ])
+
+            return feedback
+
+        except Exception as e:
+            logger.error(f"Error analyzing assignment: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to analyze assignment. Please try again."
+            )
+
+    def calculate_question_score(self, student_answer: str, correct_answer: str) -> int:
+        """Calculate a score (0-100) for a question based on answer quality."""
+        # Calculate similarity score (0-1)
+        similarity = self.calculate_similarity(student_answer, correct_answer)
+        
+        # Convert to percentage (0-100)
+        score = round(similarity * 100)
+        
+        # Apply penalties for very short answers
+        if len(student_answer.split()) < 10:
+            score = max(0, score - 20)
+        
+        return score
+
+    def get_correct_answer(self, question: str) -> str:
+        """Get the correct answer for a given question."""
+        # This would typically involve querying a database or knowledge base
+        # For now, return a placeholder
+        return "Correct answer placeholder"
+
+    def compare_answers(self, student_answer: str, correct_answer: str) -> bool:
+        """Compare student answer with correct answer."""
+        # This would typically involve more sophisticated comparison
+        # For now, use simple string similarity
+        similarity = self.calculate_similarity(student_answer, correct_answer)
+        return similarity > 0.8
+
+    def get_explanation(self, question: str) -> str:
+        """Get explanation for a question."""
+        # This would typically involve querying a database or knowledge base
+        # For now, return a placeholder
+        return "Explanation placeholder"
+
+    def calculate_similarity(self, text1: str, text2: str) -> float:
+        """Calculate similarity between two texts."""
+        # This would typically involve more sophisticated NLP
+        # For now, use simple string matching
+        text1 = text1.lower()
+        text2 = text2.lower()
+        words1 = set(text1.split())
+        words2 = set(text2.split())
+        intersection = words1.intersection(words2)
+        union = words1.union(words2)
+        return len(intersection) / len(union) if union else 0
