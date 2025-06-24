@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { 
   BookOpen, 
   Users, 
@@ -9,8 +10,14 @@ import {
   TrendingUp,
   Plus,
   Calendar,
-  Clock
+  Clock,
+  AlertCircle,
+  Copy
 } from 'lucide-react';
+import { classroomService } from '@/lib/classroom';
+import { Classroom } from '@/lib/types';
+import { useNavigate } from 'react-router-dom';
+import { useToast } from '@/hooks/use-toast';
 import StudentDashboard from './StudentDashboard';
 
 interface DashboardContentProps {
@@ -21,11 +28,50 @@ interface DashboardContentProps {
 }
 
 const DashboardContent: React.FC<DashboardContentProps> = ({ user }) => {
+  const [classrooms, setClassrooms] = useState<Classroom[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const { toast } = useToast();
   const isTeacher = user.role === 'teacher';
+
+  useEffect(() => {
+    loadClassrooms();
+  }, []);
+
+  const loadClassrooms = async () => {
+    try {
+      setIsLoading(true);
+      const data = await classroomService.getClassrooms();
+      setClassrooms(data);
+      setError(null);
+    } catch (err: any) {
+      const errorMessage = err.response?.data?.detail || 'Failed to load classrooms';
+      setError(errorMessage);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const copyClassCode = async (classCode: string) => {
+    try {
+      await navigator.clipboard.writeText(classCode);
+      toast({
+        title: "Copied!",
+        description: "Class code copied to clipboard",
+      });
+    } catch (err) {
+      toast({
+        title: "Error",
+        description: "Failed to copy class code",
+        variant: "destructive",
+      });
+    }
+  };
 
   // Mock handlers for student dashboard
   const handleJoinClassroom = () => {
-    console.log('Navigate to join classroom page');
+    navigate('/join-classroom');
   };
 
   const handleViewAssignments = () => {
@@ -48,36 +94,10 @@ const DashboardContent: React.FC<DashboardContentProps> = ({ user }) => {
       </div>
     );
   }
-
   const teacherStats = [
-    { title: "Active Classes", value: "6", icon: BookOpen, change: "+2 this month" },
-    { title: "Total Students", value: "124", icon: Users, change: "+12 this week" },
-    { title: "Pending Assignments", value: "8", icon: ClipboardList, change: "3 due today" },
+    { title: "Active Classes", value: classrooms.filter(c => c.is_active).length.toString(), icon: BookOpen, change: "+2 this month" },
+    { title: "Total Classes", value: classrooms.length.toString(), icon: Users, change: "+12 this week" },    { title: "Pending Assignments", value: "8", icon: ClipboardList, change: "3 due today" },
     { title: "Avg. Performance", value: "87%", icon: TrendingUp, change: "+5% this month" },
-  ];
-
-  const recentClasses = [
-    {
-      name: "Mathematics 101",
-      description: "Algebra and Geometry Fundamentals",
-      students: 28,
-      nextClass: "Today, 2:00 PM",
-      color: "bg-blue-50 border-blue-200",
-    },
-    {
-      name: "Physics Lab",
-      description: "Experimental Physics and Lab Work",
-      students: 22,
-      nextClass: "Tomorrow, 10:00 AM",
-      color: "bg-green-50 border-green-200",
-    },
-    {
-      name: "Literature Analysis",
-      description: "Modern Literature and Critical Thinking",
-      students: 31,
-      nextClass: "Wed, 1:00 PM",
-      color: "bg-purple-50 border-purple-200",
-    },
   ];
 
   return (
@@ -106,9 +126,7 @@ const DashboardContent: React.FC<DashboardContentProps> = ({ user }) => {
             </CardContent>
           </Card>
         ))}
-      </div>
-
-      {/* Main Content Grid */}
+      </div>      {/* Main Content Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Recent Classes */}
         <div className="lg:col-span-2">
@@ -118,30 +136,88 @@ const DashboardContent: React.FC<DashboardContentProps> = ({ user }) => {
                 <CardTitle className="font-google">Your Classes</CardTitle>
                 <CardDescription>Manage your active classes</CardDescription>
               </div>
-              <Button size="sm" className="bg-primary hover:bg-primary/90">
+              <Button 
+                size="sm" 
+                className="bg-primary hover:bg-primary/90"
+                onClick={() => navigate('/create-classroom')}
+              >
                 <Plus className="h-4 w-4 mr-2" />
                 New Class
               </Button>
             </CardHeader>
             <CardContent className="space-y-4">
-              {recentClasses.map((classItem, index) => (
-                <div key={index} className={`p-4 rounded-lg border-2 ${classItem.color} hover-lift cursor-pointer`}>
-                  <div className="flex items-start justify-between">
-                    <div className="space-y-1">
-                      <h3 className="font-semibold text-foreground">{classItem.name}</h3>
-                      <p className="text-sm text-muted-foreground">{classItem.description}</p>
-                      <div className="flex items-center space-x-2 text-sm text-muted-foreground">
-                        <Users className="h-4 w-4" />
-                        <span>{classItem.students} students</span>
-                      </div>
+              {error && (
+                <Alert variant="destructive">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
+              
+              {isLoading ? (
+                <div className="space-y-3">
+                  {[1, 2, 3].map((i) => (
+                    <div key={i} className="p-4 rounded-lg border-2 bg-gray-50 animate-pulse">
+                      <div className="h-4 bg-gray-200 rounded w-1/4 mb-2"></div>
+                      <div className="h-3 bg-gray-200 rounded w-3/4 mb-3"></div>
+                      <div className="h-3 bg-gray-200 rounded w-1/2"></div>
                     </div>
-                    <Badge variant="outline" className="bg-white">
-                      <Clock className="h-3 w-3 mr-1" />
-                      {classItem.nextClass}
-                    </Badge>
-                  </div>
+                  ))}
                 </div>
-              ))}
+              ) : classrooms.length === 0 ? (
+                <div className="text-center py-8">
+                  <BookOpen className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                  <h3 className="text-lg font-semibold text-gray-600 mb-2">No classes yet</h3>
+                  <p className="text-gray-500 mb-4">Create your first classroom to get started</p>
+                  <Button 
+                    onClick={() => navigate('/create-classroom')}
+                    className="bg-primary hover:bg-primary/90"
+                  >
+                    <Plus className="h-4 w-4 mr-2" />
+                    Create Classroom
+                  </Button>
+                </div>              ) : (
+                classrooms.map((classroom) => (
+                  <div 
+                    key={classroom.id} 
+                    className="p-4 rounded-lg border-2 bg-blue-50 border-blue-200 hover-lift cursor-pointer transition-all hover:bg-blue-100"
+                    onClick={() => navigate(`/classroom/${classroom.id}`)}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="space-y-2 flex-1">
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-semibold text-foreground">{classroom.name}</h3>
+                          {!classroom.is_active && (
+                            <Badge variant="secondary">Inactive</Badge>
+                          )}
+                        </div>
+                        {classroom.description && (
+                          <p className="text-sm text-muted-foreground">{classroom.description}</p>
+                        )}
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-2 text-sm text-muted-foreground">
+                            <Users className="h-4 w-4" />
+                            <span>Class Code: {classroom.class_code}</span>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              copyClassCode(classroom.class_code);
+                            }}
+                          >
+                            <Copy className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </div>
+                      <Badge variant="outline" className="bg-white">
+                        <Calendar className="h-3 w-3 mr-1" />
+                        {new Date(classroom.created_at).toLocaleDateString()}
+                      </Badge>
+                    </div>
+                  </div>
+                ))
+              )}
             </CardContent>
           </Card>
         </div>

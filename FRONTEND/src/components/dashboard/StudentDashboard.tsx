@@ -1,8 +1,9 @@
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { 
   BookOpen, 
   ClipboardList, 
@@ -14,6 +15,9 @@ import {
   FileText,
   AlertCircle
 } from 'lucide-react';
+import { classroomService } from '@/lib/classroom';
+import { Classroom } from '@/lib/types';
+import { useNavigate } from 'react-router-dom';
 
 interface StudentDashboardProps {
   user: {
@@ -30,38 +34,33 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
   onViewAssignments,
   onViewSubmissionHistory 
 }) => {
+  const [classrooms, setClassrooms] = useState<Classroom[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    loadClassrooms();
+  }, []);
+
+  const loadClassrooms = async () => {
+    try {
+      setIsLoading(true);
+      const data = await classroomService.getClassrooms();
+      setClassrooms(data);
+      setError(null);
+    } catch (err: any) {
+      const errorMessage = err.response?.data?.detail || 'Failed to load classrooms';
+      setError(errorMessage);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const stats = [
-    { title: "Enrolled Classes", value: "5", icon: BookOpen, change: "Spring 2024" },
-    { title: "Pending Assignments", value: "3", icon: ClipboardList, change: "2 due tomorrow" },
+    { title: "Enrolled Classes", value: classrooms.length.toString(), icon: BookOpen, change: "Spring 2024" },    { title: "Pending Assignments", value: "3", icon: ClipboardList, change: "2 due tomorrow" },
     { title: "Overall Grade", value: "A-", icon: TrendingUp, change: "89% average" },
     { title: "Attendance", value: "96%", icon: Calendar, change: "Excellent" },
-  ];
-
-  const enrolledClasses = [
-    {
-      name: "Computer Science 101",
-      description: "Introduction to Programming",
-      instructor: "Dr. Smith",
-      nextClass: "Today, 2:00 PM",
-      pendingAssignments: 2,
-      color: "bg-blue-50 border-blue-200",
-    },
-    {
-      name: "Mathematics 201",
-      description: "Linear Algebra",
-      instructor: "Prof. Johnson",
-      nextClass: "Tomorrow, 10:00 AM",
-      pendingAssignments: 1,
-      color: "bg-green-50 border-green-200",
-    },
-    {
-      name: "Database Systems",
-      description: "Database Design and Implementation",
-      instructor: "Dr. Williams",
-      nextClass: "Wed, 1:00 PM",
-      pendingAssignments: 0,
-      color: "bg-purple-50 border-purple-200",
-    },
   ];
 
   const upcomingAssignments = [
@@ -127,30 +126,63 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
                 <Plus className="h-4 w-4 mr-2" />
                 Join Class
               </Button>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {enrolledClasses.map((classItem, index) => (
-                <div key={index} className={`p-4 rounded-lg border-2 ${classItem.color} hover-lift cursor-pointer`}>
-                  <div className="flex items-start justify-between">
-                    <div className="space-y-1 flex-1">
-                      <h3 className="font-semibold text-foreground">{classItem.name}</h3>
-                      <p className="text-sm text-muted-foreground">{classItem.description}</p>
-                      <p className="text-xs text-muted-foreground">Instructor: {classItem.instructor}</p>
+            </CardHeader>            <CardContent className="space-y-4">
+              {error && (
+                <Alert variant="destructive">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
+              
+              {isLoading ? (
+                <div className="space-y-3">
+                  {[1, 2, 3].map((i) => (
+                    <div key={i} className="p-4 rounded-lg border-2 bg-gray-50 animate-pulse">
+                      <div className="h-4 bg-gray-200 rounded w-1/4 mb-2"></div>
+                      <div className="h-3 bg-gray-200 rounded w-3/4 mb-3"></div>
+                      <div className="h-3 bg-gray-200 rounded w-1/2"></div>
                     </div>
-                    <div className="text-right space-y-1">
-                      <Badge variant="outline" className="bg-white">
-                        <Clock className="h-3 w-3 mr-1" />
-                        {classItem.nextClass}
-                      </Badge>
-                      {classItem.pendingAssignments > 0 && (
-                        <Badge variant="secondary" className="bg-orange-100 text-orange-800">
-                          {classItem.pendingAssignments} pending
+                  ))}
+                </div>
+              ) : classrooms.length === 0 ? (
+                <div className="text-center py-8">
+                  <BookOpen className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                  <h3 className="text-lg font-semibold text-gray-600 mb-2">No classes yet</h3>
+                  <p className="text-gray-500 mb-4">Join your first classroom to get started</p>
+                  <Button 
+                    onClick={onJoinClassroom}
+                    className="bg-primary hover:bg-primary/90"
+                  >
+                    <Plus className="h-4 w-4 mr-2" />
+                    Join Classroom
+                  </Button>
+                </div>              ) : (
+                classrooms.map((classroom) => (
+                  <div 
+                    key={classroom.id} 
+                    className="p-4 rounded-lg border-2 bg-blue-50 border-blue-200 hover-lift cursor-pointer transition-all hover:bg-blue-100"
+                    onClick={() => navigate(`/classroom/${classroom.id}`)}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="space-y-1 flex-1">
+                        <h3 className="font-semibold text-foreground">{classroom.name}</h3>
+                        {classroom.description && (
+                          <p className="text-sm text-muted-foreground">{classroom.description}</p>
+                        )}
+                        <p className="text-xs text-muted-foreground">
+                          Joined: {new Date(classroom.created_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <div className="text-right space-y-1">
+                        <Badge variant="outline" className="bg-white">
+                          <Users className="h-3 w-3 mr-1" />
+                          Active
                         </Badge>
-                      )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                ))
+              )}
             </CardContent>
           </Card>
         </div>

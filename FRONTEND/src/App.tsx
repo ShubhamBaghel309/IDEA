@@ -15,6 +15,8 @@ import JoinClassroomPage from "./pages/JoinClassroomPage";
 import CreateAssignmentPage from "./pages/CreateAssignmentPage";
 import EnhancedFileAnalysisPage from "./pages/EnhancedFileAnalysisPage";
 import AssignmentUploadPage from "./pages/AssignmentUploadPage";
+import ClassroomDetailPage from "./pages/ClassroomDetailPage";
+import DebugPage from "./pages/DebugPage";
 
 // Simple NotFound component
 const NotFound = () => (
@@ -50,6 +52,15 @@ const App = () => (
                 <ProtectedRoute>
                   <DashboardPage />
                 </ProtectedRoute>
+              }            />
+            
+            {/* Classroom Detail - Available to all authenticated users */}
+            <Route 
+              path="/classroom/:classroomId" 
+              element={
+                <ProtectedRoute>
+                  <ClassroomDetailPage />
+                </ProtectedRoute>
               } 
             />
             
@@ -58,10 +69,7 @@ const App = () => (
               path="/create-classroom" 
               element={
                 <ProtectedRoute requiredRole="teacher">
-                  <CreateClassroomPage 
-                    onBack={() => window.history.back()}
-                    onCreateClassroom={() => console.log('Create classroom')}
-                  />
+                  <CreateClassroomPage />
                 </ProtectedRoute>
               } 
             />
@@ -83,10 +91,7 @@ const App = () => (
               path="/join-classroom" 
               element={
                 <ProtectedRoute requiredRole="student">
-                  <JoinClassroomPage 
-                    onBack={() => window.history.back()}
-                    onJoinClassroom={() => console.log('Join classroom')}
-                  />
+                  <JoinClassroomPage />
                 </ProtectedRoute>
               } 
             />
@@ -99,13 +104,22 @@ const App = () => (
                 </ProtectedRoute>
               } 
             />
-            
-            {/* Assignment Upload - Available to all authenticated users */}
+              {/* Assignment Upload - Available to all authenticated users */}
             <Route 
               path="/upload-assignment" 
               element={
                 <ProtectedRoute>
                   <AssignmentUploadPage />
+                </ProtectedRoute>
+              } 
+            />
+            
+            {/* Debug route */}
+            <Route 
+              path="/debug" 
+              element={
+                <ProtectedRoute>
+                  <DebugPage />
                 </ProtectedRoute>
               } 
             />
