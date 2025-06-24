@@ -1,43 +1,58 @@
-nltk>=3.8.1
-streamlit>=1.31.0
-matplotlib>=3.8.2
-torch>=2.1.0
-sentencepiece>=0.1.99
-transformers>=4.37.0
-plotly>=5.18.0
-python-docx>=1.0.1
-scikit-learn>=1.4.0
-numpy>=1.26.3
-pytest>=7.4.0
-httpx>=0.25.2
-uvicorn>=0.27.0
+# Core FastAPI and server
 fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.0.0
 python-dotenv>=1.0.0
-chromadb>=0.4.22
+python-multipart>=0.0.6
+aiofiles>=23.0.0
+
+# Database and Authentication  
+sqlalchemy>=2.0.0
+passlib[bcrypt]>=1.7.4
+python-jose[cryptography]>=3.3.0
+bcrypt>=4.0.0
+email-validator>=2.0.0
+
+# AI and ML
+google-generativeai>=0.3.1
+sentence-transformers>=2.2.2
+torch>=2.1.0
+transformers>=4.37.0
+sentencepiece>=0.1.99
+scikit-learn>=1.4.0
+
+# LangChain ecosystem
 langchain>=0.1.8
 langchain-community>=0.0.16
 langchain-google-genai>=0.0.5
 langchain-huggingface>=0.0.2
 langgraph>=0.0.20
+
+# Document processing
 PyPDF2>=3.0.1
-google-generativeai>=0.3.1
-duckduckgo-search>=3.9.9
-sentence-transformers>=2.2.2
-python-multipart>=0.0.6
+python-docx>=1.0.1
+nbformat>=5.0.0
+jupyter>=1.0.0
+
+# Data processing
+numpy>=1.26.3
 pandas>=2.1.4
-fastapi
-uvicorn[standard]
-python-multipart
-pydantic
-python-dotenv
-sqlalchemy
-passlib[bcrypt]
-python-jose[cryptography]
-PyPDF2
-python-docx
-numpy
-pandas
-jupyter
-nbformat
-requests
-aiofiles
+matplotlib>=3.8.2
+plotly>=5.18.0
+
+# Vector database and search
+chromadb>=0.4.22
+duckduckgo-search>=3.9.9
+
+# Text processing
+nltk>=3.8.1
+
+# HTTP and requests
+requests>=2.31.0
+httpx>=0.25.2
+
+# Testing (optional - for development)
+pytest>=7.4.0
+
+# Legacy (remove if not needed)
+streamlit>=1.31.0
