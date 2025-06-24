@@ -7,6 +7,7 @@ export interface User {
 
 export interface Token {
   access_token: string;
+  refresh_token: string;
   token_type: string;
   user: User;
 }
@@ -52,6 +53,9 @@ export interface Assignment {
   teacher_id: number;
   allowed_file_types: string[];
   max_file_size_mb: number;
+  assignment_type?: 'upload' | 'generate';
+  file_name?: string;
+  file_path?: string;
 }
 
 export interface AssignmentCreate {

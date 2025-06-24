@@ -1,13 +1,13 @@
 import api from './api';
 import { Token, UserCreate, UserLogin } from './types';
 
-export const authService = {
-  // Register a new user
+export const authService = {  // Register a new user
   async register(userData: UserCreate): Promise<Token> {
     const response = await api.post<Token>('/auth/register', userData);
     
     // Store token and user data
     localStorage.setItem('accessToken', response.data.access_token);
+    localStorage.setItem('refreshToken', response.data.refresh_token);
     localStorage.setItem('user', JSON.stringify(response.data.user));
     
     return response.data;
@@ -19,6 +19,7 @@ export const authService = {
     
     // Store token and user data
     localStorage.setItem('accessToken', response.data.access_token);
+    localStorage.setItem('refreshToken', response.data.refresh_token);
     localStorage.setItem('user', JSON.stringify(response.data.user));
     
     return response.data;
@@ -27,6 +28,7 @@ export const authService = {
   // Logout user
   logout(): void {
     localStorage.removeItem('accessToken');
+    localStorage.removeItem('refreshToken');
     localStorage.removeItem('user');
   },
 
