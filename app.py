@@ -1,7 +1,8 @@
 import os
 import uvicorn
+import shutil
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Depends, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -43,8 +44,16 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
 
-# Initialize AssignmentChecker with vector database
-checker = AssignmentChecker(vector_db_dir="./vector_db")
+# Initialize AssignmentChecker lazily (only when needed)
+checker = None
+
+def get_checker():
+    global checker
+    if checker is None:
+        print("🔄 Initializing AI models (first time only)...")
+        checker = AssignmentChecker(vector_db_dir="./vector_db")
+        print("✅ AI models loaded successfully!")
+    return checker
 
 # Initialize FastAPI
 app = FastAPI(title="Assignment Analysis API")
@@ -443,14 +452,133 @@ async def create_assignment(
         due_date=assignment.due_date,
         classroom_id=classroom_id,
         teacher_id=current_user.id,
+        assignment_type="text",  # Default to text for regular assignments
         allowed_file_types=json.dumps(assignment.allowed_file_types),
-        max_file_size_mb=assignment.max_file_size_mb
+        max_file_size_mb=assignment.max_file_size_mb,
+        status=AssignmentStatus.PUBLISHED  # Auto-publish text assignments
     )
     db.add(db_assignment)
     db.commit()
     db.refresh(db_assignment)
     
     return {"assignment_id": db_assignment.id}
+
+@app.post("/classrooms/{classroom_id}/assignments/upload")
+async def create_assignment_with_file(
+    classroom_id: int,
+    title: str = Form(...),
+    description: str = Form(...),
+    instructions: str = Form(""),
+    max_points: float = Form(100.0),
+    due_date: Optional[str] = Form(None),
+    assignment_type: str = Form("file"),  # "file" or "generated"
+    file: Optional[UploadFile] = File(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if current_user.role != UserRole.TEACHER:
+        raise HTTPException(status_code=403, detail="Only teachers can create assignments")
+    
+    # Verify classroom ownership
+    classroom = db.query(Classroom).filter(
+        Classroom.id == classroom_id,
+        Classroom.teacher_id == current_user.id
+    ).first()
+    if not classroom:
+        raise HTTPException(status_code=404, detail="Classroom not found")
+    
+    # Parse due_date if provided
+    parsed_due_date = None
+    if due_date:
+        try:
+            parsed_due_date = datetime.fromisoformat(due_date.replace('Z', '+00:00'))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid due_date format")
+    
+    file_path = None
+    file_name = None
+    
+    # Handle file upload if provided
+    if file and assignment_type == "file":
+        # Create uploads directory if it doesn't exist
+        upload_dir = Path("uploads/assignments")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate unique filename
+        file_extension = file.filename.split('.')[-1] if '.' in file.filename else ''
+        unique_filename = f"{secrets.token_urlsafe(16)}.{file_extension}"
+        file_path = str(upload_dir / unique_filename)
+        file_name = file.filename
+        
+        # Save file
+        try:
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+    
+    # Create assignment
+    db_assignment = Assignment(
+        title=title,
+        description=description,
+        instructions=instructions,
+        max_points=max_points,
+        due_date=parsed_due_date,
+        classroom_id=classroom_id,
+        teacher_id=current_user.id,
+        assignment_type=assignment_type,
+        file_name=file_name,
+        file_path=file_path,
+        allowed_file_types=json.dumps(["pdf", "txt", "py", "cpp", "ipynb", "java", "js"]),
+        max_file_size_mb=10,        status=AssignmentStatus.PUBLISHED  # Auto-publish uploaded assignments
+    )
+    db.add(db_assignment)
+    db.commit()
+    db.refresh(db_assignment)
+    
+    return {
+        "assignment_id": db_assignment.id,
+        "message": "Assignment created successfully",
+        "assignment_type": assignment_type,
+        "file_uploaded": file is not None
+    }
+
+@app.get("/assignments/{assignment_id}/download")
+async def download_assignment_file(
+    assignment_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    # Get assignment
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    
+    # Verify access (students must be enrolled, teachers must own the assignment)
+    if current_user.role == UserRole.TEACHER and assignment.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your assignment")
+    elif current_user.role == UserRole.STUDENT:
+        enrollment = db.query(ClassroomEnrollment).filter(
+            ClassroomEnrollment.classroom_id == assignment.classroom_id,
+            ClassroomEnrollment.user_id == current_user.id
+        ).first()
+        if not enrollment:
+            raise HTTPException(status_code=403, detail="Not enrolled in this classroom")
+    
+    # Check if assignment has a file
+    if not assignment.file_path or not assignment.file_name:
+        raise HTTPException(status_code=404, detail="No file attached to this assignment")
+    
+    # Check if file exists
+    if not os.path.exists(assignment.file_path):
+        raise HTTPException(status_code=404, detail="Assignment file not found")
+    
+    # Return file
+    return FileResponse(
+        path=assignment.file_path,
+        filename=assignment.file_name,
+        media_type='application/octet-stream'
+    )
 
 @app.post("/assignments/{assignment_id}/submit")
 async def submit_assignment(
@@ -692,7 +820,7 @@ async def check_text_assignment(request: TextAssignmentRequest):
             )
         
         # Step 3: Proceed with normal assignment checking
-        result = checker.check_assignment(
+        result = get_checker().check_assignment(
             question=request.question,
             student_answer=request.answer,
             student_name=request.student_name,
@@ -790,7 +918,7 @@ async def check_pdf_assignment(
             )
         
         # Step 4: Proceed with normal assignment checking
-        result = checker.check_pdf_assignment(
+        result = get_checker().check_pdf_assignment(
             pdf_file=file_bytes,
             assignment_prompt=assignment_prompt,  # Updated parameter name
             student_name=student_name,
@@ -840,7 +968,7 @@ async def analyze_file(
         if file_extension == '.pdf':
             # Process PDF
             pdf_file = io.BytesIO(content)
-            result = checker.check_pdf_assignment(
+            result = get_checker().check_pdf_assignment(
                 pdf_file=pdf_file,
                 assignment_prompt=question,
                 student_name=student_name
@@ -856,7 +984,7 @@ async def analyze_file(
                     raise HTTPException(status_code=400, detail="Unable to decode file content")
             
             # Use enhanced assignment checker
-            result = checker.check_assignment(
+            result = get_checker().check_assignment(
                 question=question,
                 student_answer=text_content,
                 student_name=student_name
@@ -902,7 +1030,7 @@ async def analyze_code(
         4. Educational value and learning demonstration
         """
         
-        result = checker.check_assignment(
+        result = get_checker().check_assignment(
             question=enhanced_question,
             student_answer=code,
             student_name=current_user.name or current_user.email
@@ -961,7 +1089,7 @@ async def analyze_jupyter(
         """
         
         # Use the assignment checker to analyze the notebook
-        result = checker.check_assignment(
+        result = get_checker().check_assignment(
             question=enhanced_question,
             student_answer=notebook_content,
             student_name=current_user.name or current_user.email
@@ -1013,7 +1141,7 @@ async def analyze_code_public(
         4. Educational value and learning demonstration
         """
         
-        result = checker.check_assignment(
+        result = get_checker().check_assignment(
             question=enhanced_question,
             student_answer=code,
             student_name=student_name
@@ -1055,7 +1183,7 @@ async def analyze_file_public(
         if file_extension == '.pdf':
             # Process PDF
             pdf_file = io.BytesIO(content)
-            result = checker.check_pdf_assignment(
+            result = get_checker().check_pdf_assignment(
                 pdf_file=pdf_file,
                 assignment_prompt=question,
                 student_name=student_name
@@ -1071,7 +1199,7 @@ async def analyze_file_public(
                     raise HTTPException(status_code=400, detail="Unable to decode file content")
             
             # Use enhanced assignment checker
-            result = checker.check_assignment(
+            result = get_checker().check_assignment(
                 question=question,
                 student_answer=text_content,
                 student_name=student_name
@@ -1130,7 +1258,7 @@ async def analyze_jupyter_public(
         """
         
         # Use the assignment checker to analyze the notebook
-        result = checker.check_assignment(
+        result = get_checker().check_assignment(
             question=enhanced_question,
             student_answer=notebook_content,
             student_name=student_name

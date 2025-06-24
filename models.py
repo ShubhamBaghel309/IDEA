@@ -81,10 +81,14 @@ class Assignment(Base):
     # Foreign keys
     classroom_id = Column(Integer, ForeignKey("classrooms.id"))
     teacher_id = Column(Integer, ForeignKey("users.id"))
-    
-    # File handling
+      # File handling
     allowed_file_types = Column(String(500))  # JSON string of allowed extensions
     max_file_size_mb = Column(Integer, default=10)
+    
+    # Assignment file (for uploaded assignments)
+    assignment_type = Column(String(50), default="text")  # "text", "file", or "generated"
+    file_name = Column(String(255))  # Original filename of uploaded assignment
+    file_path = Column(String(500))  # Path to uploaded assignment file
     
     # Relationships
     classroom = relationship("Classroom", back_populates="assignments")
