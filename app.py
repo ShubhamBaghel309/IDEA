@@ -10,7 +10,7 @@ from typing import Optional, Dict, Any, List
 from dotenv import load_dotenv
 import logging
 import io
-import jwt
+from jose import jwt, JWTError
 from datetime import datetime, timedelta
 from passlib.context import CryptContext
 from sqlalchemy import create_engine
@@ -1688,73 +1688,3 @@ async def get_student_progress(
     
     # Calculate average grade
     grades = [s.grade for s in submissions if s.grade]
-    average_grade = sum(grades) / len(grades) if grades else 0
-    
-    # Get recent submissions
-    recent_submissions = []
-    for submission in sorted(submissions, key=lambda x: x.submitted_at, reverse=True)[:5]:
-        assignment = db.query(Assignment).filter(Assignment.id == submission.assignment_id).first()
-        recent_submissions.append({
-            "assignment_title": assignment.title,
-            "submitted_at": submission.submitted_at.isoformat(),
-            "grade": submission.grade,
-            "status": submission.status.value
-        })
-    
-    # Calculate grade trend
-    grade_trend = []
-    for submission in sorted(submissions, key=lambda x: x.submitted_at):
-        if submission.grade:
-            grade_trend.append({
-                "assignment_title": db.query(Assignment).filter(Assignment.id == submission.assignment_id).first().title,
-                "grade": submission.grade,
-                "submitted_at": submission.submitted_at.isoformat()
-            })
-    
-    # Calculate attendance rate (placeholder - implement actual attendance tracking)
-    attendance_rate = 0.95  # Example value
-    
-    return StudentProgress(
-        student_id=student_id,
-        student_name=student.name,
-        completed_assignments=completed_assignments,
-        total_assignments=total_assignments,
-        average_grade=average_grade,
-        recent_submissions=recent_submissions,
-        grade_trend=grade_trend,
-        attendance_rate=attendance_rate
-    )
-
-@app.post("/classrooms/{classroom_id}/attendance")
-async def mark_attendance(
-    classroom_id: int,
-    date: datetime,
-    present_student_ids: List[int],
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    # Verify teacher access
-    if current_user.role != UserRole.TEACHER:
-        raise HTTPException(status_code=403, detail="Only teachers can mark attendance")
-    
-    # Verify classroom access
-    classroom = db.query(Classroom).filter(Classroom.id == classroom_id).first()
-    if not classroom:
-        raise HTTPException(status_code=404, detail="Classroom not found")
-    
-    # Get all enrolled students
-    enrolled_students = db.query(ClassroomEnrollment).filter(
-        ClassroomEnrollment.classroom_id == classroom_id
-    ).all()
-    
-    # Mark attendance for each student
-    for enrollment in enrolled_students:
-        is_present = enrollment.user_id in present_student_ids
-        # In a real application, you would store this in an attendance table
-        # For now, we'll just return a success message
-        pass
-    
-    return {"message": "Attendance marked successfully"}
-
-if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)

@@ -124,12 +124,12 @@ const JoinClassroomPage: React.FC<JoinClassroomPageProps> = ({ onBack }) => {
                     onChange={(e) => setClassCode(e.target.value.toUpperCase())}
                     placeholder="Enter class code (e.g., ABC123)"
                     className="text-center text-lg font-mono tracking-wider"
-                    maxLength={6}
+                    maxLength={8}
                     required
                     disabled={isLoading}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Class codes are usually 6 characters long
+                    Class codes are usually 8 characters long
                   </p>
                 </div>
 
