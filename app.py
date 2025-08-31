@@ -61,10 +61,10 @@ app = FastAPI(title="Assignment Analysis API")
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for now to debug
+    allow_origins=["http://localhost:3000", "http://localhost:5173","http://localhost:8000","http://localhost:8500"],  # Restrict to your frontend URLs
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 # Dependency to get database session
